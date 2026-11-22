@@ -301,7 +301,7 @@ PROMPT;
         }
 
         $systemPrompt = <<<PROMPT
-You are the **Ethiopian Tourist Destination Assistant**, a friendly, highly knowledgeable, and accurate AI travel guide for Ethiopia.
+You are the Ethiopian Tourist Destination Assistant, a warm, highly knowledgeable, and accurate AI travel guide for Ethiopia.
 
 Your job is to answer user questions about Ethiopian tourist destinations, historic sites, national parks, lakes, cultural events, hotels, resorts, and travel agencies.
 
@@ -312,8 +312,14 @@ CONVERSATIONAL MEMORY & GROUNDING INSTRUCTIONS:
 4. Do not invent facts, destinations, or contact details not supported by the context.
 5. If the retrieved context does not contain enough information to answer the question, clearly state:
    "I couldn't find sufficient information about this topic in my current tourism knowledge base. Please try another question or check back after more documents have been added."
-6. Format answers cleanly using markdown paragraphs, bold titles, and bullet points.
-7. Provide a warm, welcoming tone reflecting authentic Ethiopian hospitality.
+
+CRITICAL FORMATTING RULES (STRICT COMPLIANCE REQUIRED):
+- DO NOT use double asterisks "**" anywhere in your response. Never write "**Historical Significance:**", "**Location:**", "**Note:**", or "**Hotel Name**".
+- DO NOT nest asterisks like "*   **Title:**".
+- To emphasize titles, names, or section headers, write them as clean, capitalized headings on their own line followed by a colon (for example: "Historical Significance:", "Location and Accessibility:", "Contact Information:").
+- For lists and key points, use clean single dashes with a space ("- Point 1") or numbered lists ("1.", "2.").
+- Write in clean, elegant, readable prose with generous paragraph spacing.
+- Provide a warm, welcoming tone reflecting authentic Ethiopian hospitality.
 PROMPT;
 
         $userPrompt = <<<PROMPT
@@ -362,7 +368,7 @@ PROMPT;
                 $candidateText = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
 
                 if (!empty($candidateText)) {
-                    return trim($candidateText);
+                    return $this->sanitizeOutputText(trim($candidateText));
                 }
             } catch (Exception $e) {
                 $lastError = $e->getMessage();
@@ -375,7 +381,27 @@ PROMPT;
     }
 
     /**
-     * Persist chat session and messages.
+     * Clean and normalize output text to remove raw markdown asterisks and nested artifacts.
+     */
+    protected function sanitizeOutputText(string $text): string
+    {
+        // 1. Convert nested bullet asterisks "*   **Title:**" into "- Title:"
+        $cleaned = preg_replace('/^\s*[*+-]\s+\*\*(.*?)\*\*:?/m', '- $1:', $text);
+
+        // 2. Remove all remaining double asterisks "**word**" -> "word"
+        $cleaned = preg_replace('/\*\*(.*?)\*\*/', '$1', $cleaned);
+
+        // 3. Remove standalone markdown bold tags that might be unclosed
+        $cleaned = str_replace('**', '', $cleaned);
+
+        // 4. Clean up any remaining leading bullet asterisks "* " into "- "
+        $cleaned = preg_replace('/^\s*\*\s+/m', '- ', $cleaned);
+
+        return trim($cleaned);
+    }
+
+    /**
+     * Persist chat session and messages with user account ownership.
      */
     protected function logChatMessages(?string $sessionId, string $question, string $answer, array $sources): void
     {
@@ -384,10 +410,18 @@ PROMPT;
         }
 
         try {
-            ChatSession::firstOrCreate(
-                ['session_id' => $sessionId],
-                ['title' => mb_substr($question, 0, 50)]
-            );
+            $userId = auth('sanctum')->id();
+
+            $session = ChatSession::where('session_id', $sessionId)->first();
+            if (!$session) {
+                ChatSession::create([
+                    'session_id' => $sessionId,
+                    'user_id' => $userId,
+                    'title' => mb_substr($question, 0, 50),
+                ]);
+            } else if ($userId && !$session->user_id) {
+                $session->update(['user_id' => $userId]);
+            }
 
             ChatMessage::create([
                 'session_id' => $sessionId,

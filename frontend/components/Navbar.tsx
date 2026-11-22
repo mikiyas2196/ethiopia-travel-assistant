@@ -10,6 +10,7 @@ import {
   LogOut,
   ShieldCheck,
   Compass,
+  Users,
 } from 'lucide-react';
 import { AdminUser } from '../types';
 
@@ -19,6 +20,7 @@ interface NavbarProps {
   currentUser: AdminUser | null;
   onOpenLogin: () => void;
   onLogout: () => void;
+  onOpenUserManagement?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -27,7 +29,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
   onOpenLogin,
   onLogout,
+  onOpenUserManagement,
 }) => {
+  const isAdmin = currentUser?.is_admin || currentUser?.role === 'admin';
+  const canViewDocs = isAdmin || currentUser?.can_view_documents;
+  const canAddDocs = isAdmin || currentUser?.can_add_documents;
   return (
     <header className="sticky top-0 z-40 bg-[#0d3d24] text-white shadow-md border-b border-[#1c5c37]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -107,17 +113,31 @@ export const Navbar: React.FC<NavbarProps> = ({
           </nav>
 
           {/* Admin User / Auth Button */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             {currentUser ? (
-              <div className="flex items-center gap-3">
-                <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#135231] text-xs text-[#e2d8c3]">
+              <div className="flex items-center gap-2">
+                {isAdmin && onOpenUserManagement && (
+                  <button
+                    onClick={onOpenUserManagement}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#165b36] text-[#faf7f2] border border-[#d48b14]/50 hover:bg-[#d48b14] hover:text-white transition shadow-sm"
+                    title="Manage users and document permissions"
+                  >
+                    <Users className="w-3.5 h-3.5 text-[#f3a628]" />
+                    <span className="hidden lg:inline">Users & Permissions</span>
+                  </button>
+                )}
+
+                <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#135231] text-xs text-[#e2d8c3]">
                   <ShieldCheck className="w-3.5 h-3.5 text-[#f3a628]" />
-                  <span>Admin: {currentUser.name}</span>
+                  <span>
+                    {isAdmin ? 'Admin' : 'User'}: {currentUser.name}
+                  </span>
                 </div>
+
                 <button
                   onClick={onLogout}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-red-950/40 text-red-300 border border-red-800/50 hover:bg-red-900/60 transition"
-                  title="Log out as administrator"
+                  title="Log out of account"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Logout</span>
@@ -129,7 +149,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-[#165b36] text-[#faf7f2] border border-[#d48b14]/40 hover:bg-[#d48b14] hover:text-white transition shadow-sm"
               >
                 <LogIn className="w-3.5 h-3.5 text-[#f3a628]" />
-                <span>Admin Login</span>
+                <span>Account Login</span>
               </button>
             )}
           </div>

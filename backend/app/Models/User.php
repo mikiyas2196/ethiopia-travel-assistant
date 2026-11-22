@@ -22,6 +22,11 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'role',
+        'can_view_documents',
+        'can_add_documents',
+        'can_edit_documents',
+        'can_delete_documents',
     ];
 
     /**
@@ -44,6 +49,58 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'can_view_documents' => 'boolean',
+            'can_add_documents' => 'boolean',
+            'can_edit_documents' => 'boolean',
+            'can_delete_documents' => 'boolean',
         ];
+    }
+
+    /**
+     * Check if user is an administrator.
+     */
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin' || $this->id === 1;
+    }
+
+    /**
+     * Check if user can view knowledge base documents.
+     */
+    public function canViewDocuments(): bool
+    {
+        return $this->isAdmin() || (bool)$this->can_view_documents;
+    }
+
+    /**
+     * Check if user can upload/add knowledge base documents.
+     */
+    public function canAddDocuments(): bool
+    {
+        return $this->isAdmin() || (bool)$this->can_add_documents;
+    }
+
+    /**
+     * Check if user can edit document metadata or reprocess.
+     */
+    public function canEditDocuments(): bool
+    {
+        return $this->isAdmin() || (bool)$this->can_edit_documents;
+    }
+
+    /**
+     * Check if user can delete documents.
+     */
+    public function canDeleteDocuments(): bool
+    {
+        return $this->isAdmin() || (bool)$this->can_delete_documents;
+    }
+
+    /**
+     * Relationship to chat sessions.
+     */
+    public function chatSessions()
+    {
+        return $this->hasMany(ChatSession::class, 'user_id');
     }
 }

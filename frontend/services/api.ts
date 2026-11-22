@@ -91,6 +91,102 @@ export const api = {
     }
   },
 
+  getAuthToken(): string | null {
+    return getAuthToken();
+  },
+
+  async getUserChatSession(): Promise<{ session_id: string; messages: ChatMessage[] }> {
+    const res = await request<{ success: boolean; session_id: string; messages: any[] }>('/chat/user-session');
+    return {
+      session_id: res.session_id,
+      messages: (res.messages || []).map((m) => ({
+        id: String(m.id),
+        role: m.role,
+        content: m.content,
+        sources: m.sources,
+        timestamp: m.created_at,
+      })),
+    };
+  },
+
+  // User & Permission Management (Admin APIs)
+  async register(name: string, email: string, password: string): Promise<{ token: string; user: AdminUser }> {
+    const res = await request<{ success: boolean; token: string; user: AdminUser }>('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password }),
+    });
+
+    if (res.token && typeof window !== 'undefined') {
+      localStorage.setItem('ethiopia_travel_admin_token', res.token);
+      localStorage.setItem('ethiopia_travel_admin_user', JSON.stringify(res.user));
+    }
+
+    return res;
+  },
+
+  async getUsers(): Promise<AdminUser[]> {
+    const res = await request<{ success: boolean; users: AdminUser[] }>('/admin/users');
+    return res.users || [];
+  },
+
+  async createAdminUser(userData: {
+    name: string;
+    email: string;
+    password: string;
+    role: 'admin' | 'user';
+    can_view_documents: boolean;
+    can_add_documents: boolean;
+    can_edit_documents: boolean;
+    can_delete_documents: boolean;
+  }): Promise<AdminUser> {
+    const res = await request<{ success: boolean; user: AdminUser }>('/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData),
+    });
+    return res.user;
+  },
+
+  async updateUserPermissions(
+    userId: number,
+    permissions: {
+      role?: 'admin' | 'user';
+      can_view_documents: boolean;
+      can_add_documents: boolean;
+      can_edit_documents: boolean;
+      can_delete_documents: boolean;
+    }
+  ): Promise<AdminUser> {
+    const res = await request<{ success: boolean; user: AdminUser }>(`/admin/users/${userId}/permissions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(permissions),
+    });
+    return res.user;
+  },
+
+  async deleteUser(userId: number): Promise<{ success: boolean; message: string }> {
+    return request(`/admin/users/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Document Viewing & Content APIs
+  getDocumentFileUrl(id: number): string {
+    const token = getAuthToken() || '';
+    return `${API_BASE_URL}/documents/${id}/view${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  },
+
+  getDocumentDownloadUrl(id: number): string {
+    const token = getAuthToken() || '';
+    return `${API_BASE_URL}/documents/${id}/download${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  },
+
+  async viewSpreadsheetDocument(id: number): Promise<any> {
+    return request(`/documents/${id}/view`);
+  },
+
   // Knowledge Base Metadata APIs
   async getStatistics(): Promise<KnowledgeBaseStats> {
     const res = await request<{ success: boolean; statistics: KnowledgeBaseStats }>('/knowledge-base/statistics');

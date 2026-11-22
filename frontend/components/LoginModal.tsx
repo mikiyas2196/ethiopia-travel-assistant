@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, Lock, Mail, ShieldCheck, AlertCircle, RotateCw } from 'lucide-react';
+import { X, Lock, Mail, User, ShieldCheck, AlertCircle, RotateCw, UserPlus } from 'lucide-react';
 import { api } from '../services/api';
 import { AdminUser } from '../types';
 
@@ -12,6 +12,8 @@ interface LoginModalProps {
 }
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess }) => {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('admin@ethiopiatravel.com');
   const [password, setPassword] = useState('admin123456');
   const [loading, setLoading] = useState(false);
@@ -25,11 +27,17 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
     setError(null);
 
     try {
-      const res = await api.login(email.trim(), password);
-      onSuccess(res.user);
-      onClose();
+      if (mode === 'login') {
+        const res = await api.login(email.trim(), password);
+        onSuccess(res.user);
+        onClose();
+      } else {
+        const res = await api.register(name.trim(), email.trim(), password);
+        onSuccess(res.user);
+        onClose();
+      }
     } catch (err: any) {
-      setError(err.message || 'Invalid administrator credentials.');
+      setError(err.message || 'Authentication failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
@@ -42,11 +50,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
         <div className="flex items-center justify-between pb-3 mb-4 border-b border-gray-100">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-[#0d3d24]/10 text-[#0d3d24] flex items-center justify-center">
-              <ShieldCheck className="w-5 h-5" />
+              {mode === 'login' ? (
+                <ShieldCheck className="w-5 h-5 text-[#d48b14]" />
+              ) : (
+                <UserPlus className="w-5 h-5 text-[#d48b14]" />
+              )}
             </div>
             <div>
-              <h2 className="text-base font-bold text-[#0d3d24]">Admin Authentication</h2>
-              <p className="text-[11px] text-[#5e6660]">Secure administrator portal</p>
+              <h2 className="text-base font-bold text-[#0d3d24]">
+                {mode === 'login' ? 'Account Login' : 'Create Account'}
+              </h2>
+              <p className="text-[11px] text-[#5e6660]">
+                {mode === 'login'
+                  ? 'Sign in as administrator or authorized user'
+                  : 'Register for an assistant user account'}
+              </p>
             </div>
           </div>
           <button
@@ -65,10 +83,29 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3.5">
+          {mode === 'register' && (
+            <div>
+              <label className="block text-xs font-semibold text-[#1e2420] mb-1">
+                Full Name
+              </label>
+              <div className="relative">
+                <User className="w-4 h-4 text-[#5e6660] absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your Name"
+                  className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none text-[#1e2420]"
+                  required
+                />
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-semibold text-[#1e2420] mb-1">
-              Admin Email
+              Email Address
             </label>
             <div className="relative">
               <Mail className="w-4 h-4 text-[#5e6660] absolute left-3 top-2.5" />
@@ -76,8 +113,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@ethiopiatravel.com"
-                className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none"
+                placeholder="name@ethiopiatravel.com"
+                className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none text-[#1e2420]"
                 required
               />
             </div>
@@ -94,13 +131,15 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none"
+                className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none text-[#1e2420]"
                 required
               />
             </div>
-            <p className="text-[11px] text-[#5e6660] mt-1.5">
-              Default credentials: <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">admin@ethiopiatravel.com</code> / <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">admin123456</code>
-            </p>
+            {mode === 'login' && (
+              <p className="text-[11px] text-[#5e6660] mt-1.5">
+                Admin credentials: <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">admin@ethiopiatravel.com</code> / <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">admin123456</code>
+              </p>
+            )}
           </div>
 
           <button
@@ -109,9 +148,54 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
             className="w-full py-2.5 rounded-xl bg-[#0d3d24] text-white font-semibold text-xs sm:text-sm hover:bg-[#165b36] transition shadow-sm flex items-center justify-center gap-2 mt-2"
           >
             {loading && <RotateCw className="w-3.5 h-3.5 animate-spin" />}
-            <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
+            <span>
+              {loading
+                ? mode === 'login'
+                  ? 'Authenticating...'
+                  : 'Registering...'
+                : mode === 'login'
+                ? 'Sign In'
+                : 'Create Account'}
+            </span>
           </button>
         </form>
+
+        {/* Mode Toggle */}
+        <div className="mt-4 pt-3 border-t border-[#e8ded1] text-center">
+          {mode === 'login' ? (
+            <p className="text-xs text-[#5e6660]">
+              Don&apos;t have an account?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('register');
+                  setEmail('');
+                  setPassword('');
+                  setError(null);
+                }}
+                className="font-bold text-[#0d3d24] hover:text-[#d48b14] underline ml-1"
+              >
+                Register
+              </button>
+            </p>
+          ) : (
+            <p className="text-xs text-[#5e6660]">
+              Already registered?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('login');
+                  setEmail('admin@ethiopiatravel.com');
+                  setPassword('admin123456');
+                  setError(null);
+                }}
+                className="font-bold text-[#0d3d24] hover:text-[#d48b14] underline ml-1"
+              >
+                Sign In
+              </button>
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

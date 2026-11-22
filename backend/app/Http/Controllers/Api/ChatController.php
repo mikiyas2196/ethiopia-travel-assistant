@@ -72,12 +72,61 @@ class ChatController extends Controller
             ]);
         }
 
+        // Isolate user & admin chat sessions from guest visitors
+        $currentUserId = auth('sanctum')->id();
+        if ($session->user_id && $session->user_id !== $currentUserId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This chat history is private to the account holder.',
+                'messages' => [],
+            ], 403);
+        }
+
         $messages = ChatMessage::where('session_id', $sessionId)
             ->orderBy('created_at', 'asc')
             ->get();
 
         return response()->json([
             'success' => true,
+            'messages' => $messages,
+        ]);
+    }
+
+    /**
+     * Get or initialize the active chat session and history for the authenticated user/admin.
+     */
+    public function userSession(): JsonResponse
+    {
+        $user = auth('sanctum')->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated',
+            ], 401);
+        }
+
+        // Find existing latest session for this user
+        $session = ChatSession::where('user_id', $user->id)
+            ->orderBy('updated_at', 'desc')
+            ->first();
+
+        if (!$session) {
+            $sessionId = 'sess_u' . $user->id . '_' . bin2hex(random_bytes(6));
+            $session = ChatSession::create([
+                'session_id' => $sessionId,
+                'user_id' => $user->id,
+                'title' => 'New Conversation',
+            ]);
+        }
+
+        $messages = ChatMessage::where('session_id', $session->session_id)
+            ->orderBy('created_at', 'asc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'session_id' => $session->session_id,
             'messages' => $messages,
         ]);
     }
@@ -90,6 +139,14 @@ class ChatController extends Controller
         $session = ChatSession::where('session_id', $sessionId)->first();
 
         if ($session) {
+            $currentUserId = auth('sanctum')->id();
+            if ($session->user_id && $session->user_id !== $currentUserId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized to clear this session.',
+                ], 403);
+            }
+
             $session->messages()->delete();
             $session->delete();
         }

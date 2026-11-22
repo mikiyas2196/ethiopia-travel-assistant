@@ -13,14 +13,18 @@ import {
   HelpCircle,
   FileText,
 } from 'lucide-react';
-import { ChatMessage, SourceCitation } from '../types';
+import { ChatMessage, SourceCitation, AdminUser } from '../types';
 import { api } from '../services/api';
 
 interface ChatInterfaceProps {
   onNavigateToUpload: () => void;
+  currentUser?: AdminUser | null;
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({
+  onNavigateToUpload,
+  currentUser,
+}) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuestion, setInputQuestion] = useState('');
   const [loading, setLoading] = useState(false);
@@ -30,34 +34,66 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize unique session and load previous chat history & suggestions
+  // Fetch suggested questions once on mount
   useEffect(() => {
-    let storedSession = '';
-    if (typeof window !== 'undefined') {
-      storedSession = localStorage.getItem('ethiopia_travel_chat_session') || '';
-      if (!storedSession) {
-        storedSession = 'sess_' + Math.random().toString(36).substring(2, 12);
-        localStorage.setItem('ethiopia_travel_chat_session', storedSession);
-      }
-    }
-    setSessionId(storedSession);
-
-    // Load existing chat history from database if session exists
-    if (storedSession) {
-      api.getChatHistory(storedSession).then((history) => {
-        if (history && history.length > 0) {
-          setMessages(history);
-        }
-      }).catch(() => {});
-    }
-
-    // Fetch suggested questions
     api.getSuggestions().then((suggs) => {
       if (suggs.length > 0) {
         setSuggestions(suggs);
       }
     }).catch(() => {});
   }, []);
+
+  // Isolate chat history: User/Admin session vs Guest visitor session
+  useEffect(() => {
+    if (currentUser) {
+      // 1. Authenticated Account: Load private account chat session & history
+      api.getUserChatSession()
+        .then((data) => {
+          setSessionId(data.session_id);
+          setMessages(data.messages || []);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(`ethiopia_chat_session_user_${currentUser.id}`, data.session_id);
+          }
+        })
+        .catch(() => {
+          let stored = '';
+          if (typeof window !== 'undefined') {
+            stored = localStorage.getItem(`ethiopia_chat_session_user_${currentUser.id}`) || '';
+            if (!stored) {
+              stored = `sess_u${currentUser.id}_` + Math.random().toString(36).substring(2, 10);
+              localStorage.setItem(`ethiopia_chat_session_user_${currentUser.id}`, stored);
+            }
+          }
+          setSessionId(stored);
+          if (stored) {
+            api.getChatHistory(stored).then((hist) => setMessages(hist || [])).catch(() => setMessages([]));
+          }
+        });
+    } else {
+      // 2. Guest Visitor: Switch to guest session; admin history is NEVER displayed
+      let guestSession = '';
+      if (typeof window !== 'undefined') {
+        guestSession = localStorage.getItem('ethiopia_travel_chat_session_guest') || '';
+        if (!guestSession) {
+          guestSession = 'sess_guest_' + Math.random().toString(36).substring(2, 12);
+          localStorage.setItem('ethiopia_travel_chat_session_guest', guestSession);
+        }
+      }
+      setSessionId(guestSession);
+
+      if (guestSession) {
+        api.getChatHistory(guestSession)
+          .then((history) => {
+            setMessages(history || []);
+          })
+          .catch(() => {
+            setMessages([]);
+          });
+      } else {
+        setMessages([]);
+      }
+    }
+  }, [currentUser]);
 
   // Auto-scroll to latest message
   useEffect(() => {
@@ -87,7 +123,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
       if (response.session_id && response.session_id !== sessionId) {
         setSessionId(response.session_id);
         if (typeof window !== 'undefined') {
-          localStorage.setItem('ethiopia_travel_chat_session', response.session_id);
+          const key = currentUser
+            ? `ethiopia_chat_session_user_${currentUser.id}`
+            : 'ethiopia_travel_chat_session_guest';
+          localStorage.setItem(key, response.session_id);
         }
       }
 
@@ -120,11 +159,99 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
     }
     setMessages([]);
     setErrorMsg(null);
-    const newSession = 'sess_' + Math.random().toString(36).substring(2, 12);
+
+    const prefix = currentUser ? `sess_u${currentUser.id}_` : 'sess_guest_';
+    const newSession = prefix + Math.random().toString(36).substring(2, 12);
     setSessionId(newSession);
+
     if (typeof window !== 'undefined') {
-      localStorage.setItem('ethiopia_travel_chat_session', newSession);
+      const key = currentUser
+        ? `ethiopia_chat_session_user_${currentUser.id}`
+        : 'ethiopia_travel_chat_session_guest';
+      localStorage.setItem(key, newSession);
     }
+  };
+
+  /**
+   * Clean message formatting:
+   * Strips raw '**' or '*   **' and formats headers, bullets, and labels cleanly without asterisks.
+   */
+  const renderCleanMessageContent = (content: string) => {
+    // 1. Normalize nested asterisks and bold tags
+    const normalized = content
+      .replace(/^\s*[*+-]\s+\*\*(.*?)\*\*:?/gm, '- $1:')
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*\*/g, '')
+      .replace(/^\s*\*\s+/gm, '• ');
+
+    const lines = normalized.split('\n');
+
+    return (
+      <div className="space-y-2 text-[14px] sm:text-[15px] leading-relaxed">
+        {lines.map((line, idx) => {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            return <div key={idx} className="h-1.5" />;
+          }
+
+          // Section Header lines (e.g. "### Title" or "Historical Significance:" or "KEY HIGHLIGHTS:")
+          const isMarkdownHeading = trimmed.startsWith('#');
+          const isColonHeading =
+            trimmed.endsWith(':') &&
+            trimmed.length < 65 &&
+            !trimmed.startsWith('•') &&
+            !trimmed.startsWith('-');
+
+          if (isMarkdownHeading || isColonHeading) {
+            const headingText = trimmed.replace(/^#+\s*/, '');
+            return (
+              <h4
+                key={idx}
+                className="font-bold text-[#0d3d24] mt-3 mb-1 text-sm sm:text-base tracking-wide flex items-center gap-1.5"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#d48b14] shrink-0"></span>
+                <span>{headingText}</span>
+              </h4>
+            );
+          }
+
+          // Bullet item lines
+          if (trimmed.startsWith('• ') || trimmed.startsWith('- ')) {
+            const itemText = trimmed.substring(2);
+            const colonIndex = itemText.indexOf(':');
+
+            if (colonIndex > 0 && colonIndex < 35) {
+              const label = itemText.substring(0, colonIndex + 1);
+              const value = itemText.substring(colonIndex + 1);
+
+              return (
+                <div key={idx} className="flex items-start gap-2 pl-2 py-0.5 text-[#242b26]">
+                  <span className="text-[#d48b14] mt-1 shrink-0 font-bold">•</span>
+                  <div>
+                    <span className="font-semibold text-[#0d3d24]">{label}</span>
+                    <span>{value}</span>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={idx} className="flex items-start gap-2 pl-2 py-0.5 text-[#242b26]">
+                <span className="text-[#d48b14] mt-1 shrink-0 font-bold">•</span>
+                <span>{itemText}</span>
+              </div>
+            );
+          }
+
+          // Regular paragraph text
+          return (
+            <p key={idx} className="text-[#242b26]">
+              {trimmed}
+            </p>
+          );
+        })}
+      </div>
+    );
   };
 
   return (
@@ -229,7 +356,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
                 )}
 
                 {/* Content */}
-                <div className="whitespace-pre-wrap">{msg.content}</div>
+                {msg.role === 'assistant' ? (
+                  renderCleanMessageContent(msg.content)
+                ) : (
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                )}
 
                 {/* Grounded Source Citations */}
                 {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (

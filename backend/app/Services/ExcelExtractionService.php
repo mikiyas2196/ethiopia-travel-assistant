@@ -108,4 +108,95 @@ class ExcelExtractionService
             throw $e;
         }
     }
+
+    /**
+     * Get structured sheet data (headers and rows) for in-browser spreadsheet viewing.
+     *
+     * @param string $filePath
+     * @param string $fileType
+     * @return array
+     */
+    public function getStructuredData(string $filePath, string $fileType = 'xlsx'): array
+    {
+        if (!file_exists($filePath)) {
+            throw new Exception("Spreadsheet file not found at path: {$filePath}");
+        }
+
+        @set_time_limit(120);
+        @ini_set('memory_limit', '512M');
+
+        $reader = IOFactory::createReaderForFile($filePath);
+        $reader->setReadDataOnly(true);
+        $reader->setReadEmptyCells(false);
+        $spreadsheet = $reader->load($filePath);
+        $sheetCount = $spreadsheet->getSheetCount();
+
+        $sheets = [];
+
+        for ($i = 0; $i < $sheetCount; $i++) {
+            $sheet = $spreadsheet->getSheet($i);
+            $sheetTitle = trim($sheet->getTitle()) ?: "Sheet " . ($i + 1);
+            $rows = $sheet->toArray(null, true, true, false);
+
+            if (empty($rows)) {
+                continue;
+            }
+
+            // Find header row
+            $headers = [];
+            $headerRowIndex = 0;
+
+            foreach ($rows as $rowIndex => $row) {
+                $nonEmpty = array_filter($row, fn($c) => $c !== null && trim((string)$c) !== '');
+                if (count($nonEmpty) >= 1) {
+                    $headers = array_values(array_map(fn($c) => trim((string)$c), $row));
+                    $headerRowIndex = $rowIndex;
+                    break;
+                }
+            }
+
+            // Clean headers
+            $cleanedHeaders = [];
+            foreach ($headers as $cIdx => $h) {
+                $cleanedHeaders[] = !empty($h) ? $h : 'Column ' . ($cIdx + 1);
+            }
+
+            // Collect data rows (up to 1000 rows for browser performance)
+            $dataRows = [];
+            $totalDataRows = 0;
+
+            for ($r = $headerRowIndex + 1; $r < count($rows); $r++) {
+                $row = $rows[$r];
+                $hasContent = false;
+                $rowVals = [];
+
+                foreach ($row as $colIndex => $val) {
+                    $strVal = trim((string)$val);
+                    if ($strVal !== '') {
+                        $hasContent = true;
+                    }
+                    $rowVals[] = $strVal;
+                }
+
+                if ($hasContent) {
+                    $totalDataRows++;
+                    if (count($dataRows) < 1000) {
+                        $dataRows[] = $rowVals;
+                    }
+                }
+            }
+
+            $sheets[] = [
+                'title' => $sheetTitle,
+                'headers' => $cleanedHeaders,
+                'rows' => $dataRows,
+                'total_rows' => $totalDataRows,
+            ];
+        }
+
+        return [
+            'sheets' => $sheets,
+            'sheet_count' => count($sheets),
+        ];
+    }
 }

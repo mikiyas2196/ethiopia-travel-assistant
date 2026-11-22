@@ -5,11 +5,14 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Document;
 use App\Services\DocumentProcessingService;
+use App\Services\ExcelExtractionService;
 use Exception;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\PersonalAccessToken;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class DocumentController extends Controller
 {
@@ -21,10 +24,39 @@ class DocumentController extends Controller
     }
 
     /**
+     * Resolve authenticated user from Bearer header or query token.
+     */
+    protected function resolveUser(Request $request)
+    {
+        $user = auth('sanctum')->user() ?? $request->user('sanctum');
+
+        if (!$user) {
+            $tokenString = $request->bearerToken() ?: $request->query('token');
+            if ($tokenString) {
+                $tokenRecord = PersonalAccessToken::findToken($tokenString);
+                if ($tokenRecord && $tokenRecord->tokenable) {
+                    $user = $tokenRecord->tokenable;
+                }
+            }
+        }
+
+        return $user;
+    }
+
+    /**
      * Display a listing of documents with optional filtering and pagination.
      */
     public function index(Request $request): JsonResponse
     {
+        $user = $this->resolveUser($request);
+
+        if (!$user || !$user->canViewDocuments()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to view knowledge base documents.',
+            ], 403);
+        }
+
         $query = Document::query();
 
         // Filter by category
@@ -72,6 +104,15 @@ class DocumentController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        $user = $this->resolveUser($request);
+
+        if (!$user || !$user->canAddDocuments()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to upload documents to the knowledge base.',
+            ], 403);
+        }
+
         @set_time_limit(600);
         @ini_set('memory_limit', '1024M');
 
@@ -127,8 +168,17 @@ class DocumentController extends Controller
     /**
      * Display a single document with chunk details.
      */
-    public function show(int $id): JsonResponse
+    public function show(Request $request, int $id): JsonResponse
     {
+        $user = $this->resolveUser($request);
+
+        if (!$user || !$user->canViewDocuments()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to view knowledge base documents.',
+            ], 403);
+        }
+
         $document = Document::withCount('chunks')->find($id);
 
         if (!$document) {
@@ -153,6 +203,15 @@ class DocumentController extends Controller
      */
     public function update(Request $request, int $id): JsonResponse
     {
+        $user = $this->resolveUser($request);
+
+        if (!$user || (!$user->canEditDocuments() && !$user->canAddDocuments())) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to edit documents.',
+            ], 403);
+        }
+
         $document = Document::find($id);
 
         if (!$document) {
@@ -166,7 +225,7 @@ class DocumentController extends Controller
             'title' => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
             'category' => 'sometimes|required|string',
-            'file' => 'nullable|file|max:51200',
+            'file' => 'nullable|file|max:71680',
             'source_name' => 'nullable|string|max:255',
             'source_url' => 'nullable|url|max:500',
         ]);
@@ -235,8 +294,17 @@ class DocumentController extends Controller
     /**
      * Delete a document and its stored assets.
      */
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, int $id): JsonResponse
     {
+        $user = $this->resolveUser($request);
+
+        if (!$user || !$user->canDeleteDocuments()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to delete documents.',
+            ], 403);
+        }
+
         $document = Document::find($id);
 
         if (!$document) {
@@ -257,8 +325,17 @@ class DocumentController extends Controller
     /**
      * Retry or reprocess document extraction and embeddings in the background.
      */
-    public function reprocess(int $id): JsonResponse
+    public function reprocess(Request $request, int $id): JsonResponse
     {
+        $user = $this->resolveUser($request);
+
+        if (!$user || (!$user->canEditDocuments() && !$user->canAddDocuments())) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to reprocess documents.',
+            ], 403);
+        }
+
         $document = Document::find($id);
 
         if (!$document) {
@@ -280,6 +357,117 @@ class DocumentController extends Controller
             'message' => 'Document reprocessing initiated in the background.',
             'document' => $document->fresh(),
         ]);
+    }
+
+    /**
+     * View actual document content (PDF stream or structured Excel/CSV table) directly through browser.
+     */
+    public function viewContent(Request $request, int $id, ExcelExtractionService $excelExtractor)
+    {
+        $user = $this->resolveUser($request);
+
+        if (!$user || !$user->canViewDocuments()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to view documents.',
+            ], 403);
+        }
+
+        $document = Document::find($id);
+
+        if (!$document) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
+        }
+
+        $absolutePath = Storage::disk('local')->path($document->stored_file_path);
+
+        if (!file_exists($absolutePath)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The physical document file was not found on the server.',
+            ], 404);
+        }
+
+        $fileType = strtolower($document->file_type);
+
+        // 1. Direct PDF rendering in browser
+        if ($fileType === 'pdf') {
+            return response()->file($absolutePath, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="' . $document->original_filename . '"',
+                'Cache-Control' => 'private, max-age=3600',
+            ]);
+        }
+
+        // 2. Excel and CSV spreadsheets:
+        // If client requests raw file download/stream
+        if ($request->query('raw') == '1' || $request->query('download') == '1') {
+            return response()->download($absolutePath, $document->original_filename);
+        }
+
+        // Otherwise return structured data for in-browser interactive spreadsheet viewer
+        try {
+            $structured = $excelExtractor->getStructuredData($absolutePath, $fileType);
+
+            return response()->json([
+                'success' => true,
+                'type' => 'spreadsheet',
+                'document' => [
+                    'id' => $document->id,
+                    'title' => $document->title,
+                    'category' => $document->category,
+                    'original_filename' => $document->original_filename,
+                    'file_type' => $document->file_type,
+                    'file_size' => $document->file_size,
+                    'chunk_count' => $document->chunk_count,
+                    'created_at' => $document->created_at->toISOString(),
+                ],
+                'data' => $structured,
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to parse spreadsheet for browser viewing: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Download original uploaded document file.
+     */
+    public function downloadFile(Request $request, int $id)
+    {
+        $user = $this->resolveUser($request);
+
+        if (!$user || !$user->canViewDocuments()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: You do not have permission to download documents.',
+            ], 403);
+        }
+
+        $document = Document::find($id);
+
+        if (!$document) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
+        }
+
+        $absolutePath = Storage::disk('local')->path($document->stored_file_path);
+
+        if (!file_exists($absolutePath)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The physical file was not found on the server.',
+            ], 404);
+        }
+
+        return response()->download($absolutePath, $document->original_filename);
     }
 
     /**

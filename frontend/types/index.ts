@@ -61,4 +61,28 @@ export interface AdminUser {
   id: number;
   name: string;
   email: string;
+  role: 'admin' | 'user';
+  is_admin: boolean;
+  can_view_documents: boolean;
+  can_add_documents: boolean;
+  can_edit_documents: boolean;
+  can_delete_documents: boolean;
+  created_at?: string;
+}
+
+export interface SpreadsheetSheet {
+  title: string;
+  headers: string[];
+  rows: string[][];
+  total_rows: number;
+}
+
+export interface SpreadsheetPreviewResponse {
+  success: boolean;
+  type: 'spreadsheet';
+  document: DocumentItem;
+  data: {
+    sheets: SpreadsheetSheet[];
+    sheet_count: number;
+  };
 }

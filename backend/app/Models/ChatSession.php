@@ -12,8 +12,17 @@ class ChatSession extends Model
 
     protected $fillable = [
         'session_id',
+        'user_id',
         'title',
     ];
+
+    /**
+     * Get the user who owns this chat session (null for guest visitors).
+     */
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id');
+    }
 
     /**
      * Get messages belonging to this chat session.

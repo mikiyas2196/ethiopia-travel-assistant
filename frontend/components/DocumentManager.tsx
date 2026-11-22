@@ -22,18 +22,26 @@ import { api } from '../services/api';
 interface DocumentManagerProps {
   onOpenUpload: () => void;
   onViewDetails: (docId: number) => void;
+  onViewFile: (doc: DocumentItem) => void;
   onEditDocument: (doc: DocumentItem) => void;
   isAuthenticated: boolean;
+  currentUser?: import('../types').AdminUser | null;
   onOpenLogin: () => void;
 }
 
 export const DocumentManager: React.FC<DocumentManagerProps> = ({
   onOpenUpload,
   onViewDetails,
+  onViewFile,
   onEditDocument,
   isAuthenticated,
+  currentUser,
   onOpenLogin,
 }) => {
+  const isAdmin = currentUser?.is_admin || currentUser?.role === 'admin';
+  const canAdd = isAdmin || currentUser?.can_add_documents;
+  const canEdit = isAdmin || currentUser?.can_edit_documents || currentUser?.can_add_documents;
+  const canDelete = isAdmin || currentUser?.can_delete_documents;
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,13 +197,15 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={onOpenUpload}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#d48b14] text-white hover:bg-[#b46f08] transition shadow-sm shrink-0"
-        >
-          <UploadCloud className="w-4 h-4" />
-          <span>Upload Document</span>
-        </button>
+        {canAdd && (
+          <button
+            onClick={onOpenUpload}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#d48b14] text-white hover:bg-[#b46f08] transition shadow-sm shrink-0"
+          >
+            <UploadCloud className="w-4 h-4" />
+            <span>Upload Document</span>
+          </button>
+        )}
       </div>
 
       {/* Alerts */}
@@ -371,43 +381,59 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        {/* View Details */}
+                        {/* In-Browser Document Viewer */}
+                        <button
+                          onClick={() => onViewFile(doc)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#0d3d24]/10 text-[#0d3d24] hover:bg-[#0d3d24] hover:text-white transition shadow-2xs"
+                          title="View document content directly in browser"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span className="hidden xl:inline">View File</span>
+                        </button>
+
+                        {/* View Details & Chunks */}
                         <button
                           onClick={() => onViewDetails(doc.id)}
                           className="p-1.5 rounded-lg text-gray-500 hover:text-[#0d3d24] hover:bg-gray-100 transition"
-                          title="View Details & Extracted Chunks"
+                          title="View metadata and extracted text chunks"
                         >
-                          <Eye className="w-4 h-4" />
+                          <FileText className="w-4 h-4" />
                         </button>
 
                         {/* Edit metadata */}
-                        <button
-                          onClick={() => onEditDocument(doc)}
-                          className="p-1.5 rounded-lg text-gray-500 hover:text-[#d48b14] hover:bg-gray-100 transition"
-                          title="Edit Document Information"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
+                        {canEdit && (
+                          <button
+                            onClick={() => onEditDocument(doc)}
+                            className="p-1.5 rounded-lg text-gray-500 hover:text-[#d48b14] hover:bg-gray-100 transition"
+                            title="Edit Document Information"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                        )}
 
                         {/* Reprocess */}
-                        <button
-                          onClick={() => handleReprocess(doc.id)}
-                          disabled={actionLoadingId === doc.id}
-                          className="p-1.5 rounded-lg text-gray-500 hover:text-indigo-600 hover:bg-gray-100 transition disabled:opacity-40"
-                          title="Reprocess Extraction and Embeddings"
-                        >
-                          <RefreshCw className={`w-4 h-4 ${actionLoadingId === doc.id ? 'animate-spin' : ''}`} />
-                        </button>
+                        {canEdit && (
+                          <button
+                            onClick={() => handleReprocess(doc.id)}
+                            disabled={actionLoadingId === doc.id}
+                            className="p-1.5 rounded-lg text-gray-500 hover:text-indigo-600 hover:bg-gray-100 transition disabled:opacity-40"
+                            title="Reprocess Extraction and Embeddings"
+                          >
+                            <RefreshCw className={`w-4 h-4 ${actionLoadingId === doc.id ? 'animate-spin' : ''}`} />
+                          </button>
+                        )}
 
                         {/* Delete */}
-                        <button
-                          onClick={() => handleDelete(doc.id, doc.title)}
-                          disabled={actionLoadingId === doc.id}
-                          className="p-1.5 rounded-lg text-gray-500 hover:text-red-600 hover:bg-gray-100 transition disabled:opacity-40"
-                          title="Delete Document"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {canDelete && (
+                          <button
+                            onClick={() => handleDelete(doc.id, doc.title)}
+                            disabled={actionLoadingId === doc.id}
+                            className="p-1.5 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50 transition disabled:opacity-40"
+                            title="Delete Document"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-600" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

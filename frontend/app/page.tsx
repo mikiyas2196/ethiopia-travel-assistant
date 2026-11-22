@@ -9,6 +9,8 @@ import { UploadModal } from '../components/UploadModal';
 import { DocumentDetailModal } from '../components/DocumentDetailModal';
 import { EditDocumentModal } from '../components/EditDocumentModal';
 import { LoginModal } from '../components/LoginModal';
+import { DocumentViewerModal } from '../components/DocumentViewerModal';
+import { UserManagementModal } from '../components/UserManagementModal';
 import { AdminUser, DocumentItem } from '../types';
 import { api } from '../services/api';
 
@@ -27,8 +29,10 @@ export default function Home() {
   // Modals state
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
   const [detailDocId, setDetailDocId] = useState<number | null>(null);
   const [editingDoc, setEditingDoc] = useState<DocumentItem | null>(null);
+  const [viewerDoc, setViewerDoc] = useState<DocumentItem | null>(null);
 
   // Initialize auth & categories
   useEffect(() => {
@@ -49,6 +53,8 @@ export default function Home() {
     if (tab === 'upload') {
       if (!currentUser) {
         setIsLoginModalOpen(true);
+      } else if (!currentUser.is_admin && !currentUser.can_add_documents) {
+        alert('You do not have permission to upload documents. Please ask an administrator to grant you document upload privileges.');
       } else {
         setIsUploadModalOpen(true);
       }
@@ -66,12 +72,16 @@ export default function Home() {
         currentUser={currentUser}
         onOpenLogin={() => setIsLoginModalOpen(true)}
         onLogout={handleLogout}
+        onOpenUserManagement={() => setIsUserManagementOpen(true)}
       />
 
       {/* Main Content Area */}
       <main className="flex-1">
         {currentTab === 'chat' && (
-          <ChatInterface onNavigateToUpload={() => handleTabChange('upload')} />
+          <ChatInterface
+            onNavigateToUpload={() => handleTabChange('upload')}
+            currentUser={currentUser}
+          />
         )}
 
         {currentTab === 'dashboard' && (
@@ -85,8 +95,10 @@ export default function Home() {
           <DocumentManager
             onOpenUpload={() => handleTabChange('upload')}
             onViewDetails={(id) => setDetailDocId(id)}
+            onViewFile={(doc) => setViewerDoc(doc)}
             onEditDocument={(doc) => setEditingDoc(doc)}
             isAuthenticated={!!currentUser}
+            currentUser={currentUser}
             onOpenLogin={() => setIsLoginModalOpen(true)}
           />
         )}
@@ -117,10 +129,21 @@ export default function Home() {
         categories={categories}
       />
 
+      {/* In-Browser Document Viewer Modal (PDF & Interactive Excel/CSV Spreadsheet Viewer) */}
+      <DocumentViewerModal
+        document={viewerDoc}
+        isOpen={!!viewerDoc}
+        onClose={() => setViewerDoc(null)}
+      />
+
       {/* Document Details Modal */}
       <DocumentDetailModal
         documentId={detailDocId}
         onClose={() => setDetailDocId(null)}
+        onViewFile={(doc) => {
+          setDetailDocId(null);
+          setViewerDoc(doc);
+        }}
       />
 
       {/* Edit Document Modal */}
@@ -134,7 +157,14 @@ export default function Home() {
         categories={categories}
       />
 
-      {/* Admin Login Modal */}
+      {/* User & Permissions Management Modal (Admin Only) */}
+      <UserManagementModal
+        isOpen={isUserManagementOpen}
+        onClose={() => setIsUserManagementOpen(false)}
+        currentUser={currentUser}
+      />
+
+      {/* Account Login / Registration Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}

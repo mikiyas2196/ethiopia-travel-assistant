@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   AlertCircle,
   RotateCw,
+  Eye,
+  Download,
 } from 'lucide-react';
 import { DocumentChunk, DocumentItem } from '../types';
 import { api } from '../services/api';
@@ -18,11 +20,13 @@ import { api } from '../services/api';
 interface DocumentDetailModalProps {
   documentId: number | null;
   onClose: () => void;
+  onViewFile?: (doc: DocumentItem) => void;
 }
 
 export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
   documentId,
   onClose,
+  onViewFile,
 }) => {
   const [document, setDocument] = useState<DocumentItem | null>(null);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
@@ -70,12 +74,24 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {document && onViewFile && (
+              <button
+                onClick={() => onViewFile(document)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0d3d24] text-white text-xs font-semibold hover:bg-[#154d2e] transition shadow-xs"
+              >
+                <Eye className="w-3.5 h-3.5 text-[#f3a628]" />
+                <span>View File in Browser</span>
+              </button>
+            )}
+
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Modal Body */}
