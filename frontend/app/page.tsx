@@ -45,8 +45,13 @@ export default function Home() {
   }, []);
 
   const handleLogout = async () => {
-    await api.logout();
-    setCurrentUser(null);
+    try {
+      await api.logout();
+    } catch {
+      // Fallback cleanup
+    } finally {
+      setCurrentUser(null);
+    }
   };
 
   const handleTabChange = (tab: 'chat' | 'dashboard' | 'documents' | 'upload') => {
@@ -75,8 +80,8 @@ export default function Home() {
         onOpenUserManagement={() => setIsUserManagementOpen(true)}
       />
 
-      {/* Main Content Area */}
-      <main className="flex-1">
+      {/* Main Content Area (padded for fixed top navbar) */}
+      <main className="flex-1 pt-[112px] md:pt-20">
         {currentTab === 'chat' && (
           <ChatInterface
             onNavigateToUpload={() => handleTabChange('upload')}

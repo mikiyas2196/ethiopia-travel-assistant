@@ -255,7 +255,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] max-w-5xl mx-auto px-4 py-4 sm:py-6">
+    <div className="flex flex-col h-[calc(100vh-112px)] md:h-[calc(100vh-5rem)] max-w-5xl mx-auto px-4 py-3 sm:py-4">
       {/* Chat Header / Welcome Banner */}
       <div className="mb-4 bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-[#e8ded1] flex items-center justify-between">
         <div className="flex items-center gap-3">

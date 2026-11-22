@@ -74,7 +74,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, [isProfileOpen]);
 
   return (
-    <header className="sticky top-0 z-40 bg-[#092617] text-white shadow-lg border-b border-[#164e2f]">
+    <header className="fixed top-0 left-0 right-0 w-full z-50 bg-[#092617]/95 backdrop-blur-md text-white shadow-lg border-b border-[#164e2f]">
       {/* Top Ethiopian Gold Brand Accent Line */}
       <div className="h-0.5 w-full bg-gradient-to-r from-[#d48b14] via-[#f3a628] to-[#165b36]" />
 

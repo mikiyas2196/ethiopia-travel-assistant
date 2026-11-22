@@ -232,7 +232,9 @@ export const api = {
 
   async logout(): Promise<void> {
     try {
-      await request('/auth/logout', { method: 'POST' });
+      await request('/auth/logout', { method: 'POST' }).catch(() => {});
+    } catch {
+      // Ignore network or token expiration errors on logout
     } finally {
       if (typeof window !== 'undefined') {
         localStorage.removeItem('ethiopia_travel_admin_token');

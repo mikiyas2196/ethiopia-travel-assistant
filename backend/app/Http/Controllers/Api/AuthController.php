@@ -93,11 +93,25 @@ class AuthController extends Controller
     }
 
     /**
-     * Admin logout.
+     * Admin/User logout.
      */
     public function logout(Request $request): JsonResponse
     {
-        $request->user()?->currentAccessToken()?->delete();
+        try {
+            $user = auth('sanctum')->user() ?? $request->user('sanctum') ?? $request->user();
+
+            if ($user) {
+                $user->currentAccessToken()?->delete();
+            } else {
+                $tokenString = $request->bearerToken() ?: $request->input('token') ?: $request->query('token');
+                if ($tokenString) {
+                    $tokenRecord = \Laravel\Sanctum\PersonalAccessToken::findToken($tokenString);
+                    $tokenRecord?->delete();
+                }
+            }
+        } catch (\Throwable $e) {
+            // Silently allow logout cleanup even if token resolution encounters an issue
+        }
 
         return response()->json([
             'success' => true,
