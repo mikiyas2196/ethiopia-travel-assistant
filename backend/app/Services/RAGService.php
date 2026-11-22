@@ -32,7 +32,11 @@ class RAGService
     {
         $this->embedder = $embedder;
         $this->apiKey = env('GEMINI_API_KEY');
-        $this->model = env('GEMINI_MODEL', 'gemini-2.5-flash');
+        $model = env('GEMINI_MODEL', 'gemini-3.5-flash');
+        if ($model === 'gemini-2.5-flash' || empty($model)) {
+            $model = 'gemini-3.5-flash';
+        }
+        $this->model = $model;
         $this->similarityThreshold = (float)env('RAG_SIMILARITY_THRESHOLD', 0.15);
         $this->topK = (int)env('RAG_TOP_K', 6);
         $this->httpClient = new Client([
@@ -212,41 +216,53 @@ USER QUESTION:
 {$question}
 PROMPT;
 
-        try {
-            $url = "/v1beta/models/{$this->model}:generateContent?key={$this->apiKey}";
+        $modelsToTry = array_unique([
+            $this->model,
+            'gemini-3.5-flash',
+            'gemini-flash-lite-latest',
+            'gemini-3.5-flash-lite',
+            'gemini-3.1-flash-lite'
+        ]);
 
-            $response = $this->httpClient->post($url, [
-                'headers' => ['Content-Type' => 'application/json'],
-                'json' => [
-                    'contents' => [
-                        [
-                            'role' => 'user',
-                            'parts' => [
-                                ['text' => $systemPrompt . "\n\n" . $userPrompt],
+        $lastError = null;
+
+        foreach ($modelsToTry as $candidateModel) {
+            try {
+                $url = "/v1beta/models/{$candidateModel}:generateContent?key={$this->apiKey}";
+
+                $response = $this->httpClient->post($url, [
+                    'headers' => ['Content-Type' => 'application/json'],
+                    'json' => [
+                        'contents' => [
+                            [
+                                'role' => 'user',
+                                'parts' => [
+                                    ['text' => $systemPrompt . "\n\n" . $userPrompt],
+                                ],
                             ],
                         ],
+                        'generationConfig' => [
+                            'temperature' => 0.2,
+                            'maxOutputTokens' => 1500,
+                        ],
                     ],
-                    'generationConfig' => [
-                        'temperature' => 0.2,
-                        'maxOutputTokens' => 1500,
-                    ],
-                ],
-            ]);
+                ]);
 
-            $data = json_decode($response->getBody()->getContents(), true);
+                $data = json_decode($response->getBody()->getContents(), true);
 
-            $candidateText = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                $candidateText = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
 
-            if (!empty($candidateText)) {
-                return trim($candidateText);
+                if (!empty($candidateText)) {
+                    return trim($candidateText);
+                }
+            } catch (Exception $e) {
+                $lastError = $e->getMessage();
+                Log::warning("Gemini generation on model {$candidateModel} failed: {$lastError}. Trying fallback model...");
             }
-
-            throw new Exception("Empty response candidate received from Gemini API.");
-
-        } catch (Exception $e) {
-            Log::error("Gemini Generation API Error: " . $e->getMessage());
-            return "An error occurred while contacting the AI service: " . $e->getMessage();
         }
+
+        Log::error("All Gemini Generation models failed: " . $lastError);
+        return "An error occurred while contacting the AI service: " . $lastError;
     }
 
     /**

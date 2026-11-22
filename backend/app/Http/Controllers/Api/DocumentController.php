@@ -76,14 +76,22 @@ class DocumentController extends Controller
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'category' => 'required|string',
-            'file' => 'required|file|mimes:pdf,xlsx,xls,csv|max:51200', // max 50MB
+            'file' => 'required|file|max:51200', // max 50MB
             'source_name' => 'nullable|string|max:255',
             'source_url' => 'nullable|url|max:500',
         ]);
 
         $uploadedFile = $request->file('file');
-        $originalFilename = $uploadedFile->getClientOriginalName();
         $extension = strtolower($uploadedFile->getClientOriginalExtension());
+
+        if (!in_array($extension, ['pdf', 'xlsx', 'xls', 'csv'])) {
+            return response()->json([
+                'message' => 'The file must be a file of type: pdf, xlsx, xls, csv.',
+                'errors' => ['file' => ['The file must be a file of type: pdf, xlsx, xls, csv.']]
+            ], 422);
+        }
+
+        $originalFilename = $uploadedFile->getClientOriginalName();
         $fileSize = $uploadedFile->getSize();
 
         // Generate safe unique filename
@@ -165,7 +173,7 @@ class DocumentController extends Controller
             'title' => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
             'category' => 'sometimes|required|string',
-            'file' => 'nullable|file|mimes:pdf,xlsx,xls,csv|max:51200',
+            'file' => 'nullable|file|max:51200',
             'source_name' => 'nullable|string|max:255',
             'source_url' => 'nullable|url|max:500',
         ]);
@@ -191,6 +199,13 @@ class DocumentController extends Controller
         // If a new replacement file is uploaded
         if ($request->hasFile('file')) {
             $uploadedFile = $request->file('file');
+            $extension = strtolower($uploadedFile->getClientOriginalExtension());
+            if (!in_array($extension, ['pdf', 'xlsx', 'xls', 'csv'])) {
+                return response()->json([
+                    'message' => 'The file must be a file of type: pdf, xlsx, xls, csv.',
+                    'errors' => ['file' => ['The file must be a file of type: pdf, xlsx, xls, csv.']]
+                ], 422);
+            }
             // Delete old file
             if (Storage::disk('local')->exists($document->stored_file_path)) {
                 Storage::disk('local')->delete($document->stored_file_path);

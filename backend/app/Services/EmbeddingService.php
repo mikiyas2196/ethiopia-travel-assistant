@@ -15,7 +15,12 @@ class EmbeddingService
     public function __construct()
     {
         $this->apiKey = env('GEMINI_API_KEY');
-        $this->model = env('GEMINI_EMBEDDING_MODEL', 'text-embedding-004');
+        $model = env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001');
+        // Map old or deprecated model name to current active model
+        if ($model === 'text-embedding-004' || empty($model)) {
+            $model = 'gemini-embedding-001';
+        }
+        $this->model = $model;
         $this->httpClient = new Client([
             'base_uri' => 'https://generativelanguage.googleapis.com',
             'timeout' => 30,
