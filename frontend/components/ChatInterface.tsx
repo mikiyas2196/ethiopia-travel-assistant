@@ -30,7 +30,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize unique session and load suggestions
+  // Initialize unique session and load previous chat history & suggestions
   useEffect(() => {
     let storedSession = '';
     if (typeof window !== 'undefined') {
@@ -41,6 +41,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
       }
     }
     setSessionId(storedSession);
+
+    // Load existing chat history from database if session exists
+    if (storedSession) {
+      api.getChatHistory(storedSession).then((history) => {
+        if (history && history.length > 0) {
+          setMessages(history);
+        }
+      }).catch(() => {});
+    }
 
     // Fetch suggested questions
     api.getSuggestions().then((suggs) => {
@@ -75,6 +84,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
     try {
       const response = await api.sendChatMessage(q, sessionId);
 
+      if (response.session_id && response.session_id !== sessionId) {
+        setSessionId(response.session_id);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('ethiopia_travel_chat_session', response.session_id);
+        }
+      }
+
       const assistantMessage: ChatMessage = {
         id: 'msg_ai_' + Date.now(),
         role: 'assistant',
@@ -98,7 +114,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
     }
   };
 
-  const handleClearChat = () => {
+  const handleClearChat = async () => {
+    if (sessionId) {
+      await api.clearChatSession(sessionId);
+    }
     setMessages([]);
     setErrorMsg(null);
     const newSession = 'sess_' + Math.random().toString(36).substring(2, 12);
@@ -117,9 +136,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
             <Compass className="w-7 h-7" />
           </div>
           <div>
-            <h1 className="text-lg sm:text-xl font-bold text-[#0d3d24]">
-              Discover Ethiopia
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg sm:text-xl font-bold text-[#0d3d24]">
+                Discover Ethiopia
+              </h1>
+              <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                Memory Active
+              </span>
+            </div>
             <p className="text-xs sm:text-sm text-[#5e6660]">
               Ask me about historical sites, national parks, lakes, scenery, culture, and hotels.
             </p>
@@ -127,14 +152,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onNavigateToUpload
         </div>
 
         {messages.length > 0 && (
-          <button
-            onClick={handleClearChat}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#5e6660] hover:text-[#0d3d24] hover:bg-[#f4efe6] transition"
-            title="Start fresh conversation"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Clear Chat</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="hidden md:inline-block text-xs text-[#8c948e]">
+              {messages.length} messages in history
+            </span>
+            <button
+              onClick={handleClearChat}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#5e6660] hover:text-[#0d3d24] hover:bg-[#f4efe6] transition border border-[#e8ded1]"
+              title="Start fresh conversation"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">New Chat</span>
+            </button>
+          </div>
         )}
       </div>
 

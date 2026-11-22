@@ -32,21 +32,21 @@ class RAGService
     {
         $this->embedder = $embedder;
         $this->apiKey = env('GEMINI_API_KEY');
-        $model = env('GEMINI_MODEL', 'gemini-3.5-flash');
+        $model = env('GEMINI_MODEL', 'gemini-3.1-flash-lite');
         if ($model === 'gemini-2.5-flash' || empty($model)) {
-            $model = 'gemini-3.5-flash';
+            $model = 'gemini-3.1-flash-lite';
         }
         $this->model = $model;
         $this->similarityThreshold = (float)env('RAG_SIMILARITY_THRESHOLD', 0.15);
         $this->topK = (int)env('RAG_TOP_K', 6);
         $this->httpClient = new Client([
             'base_uri' => 'https://generativelanguage.googleapis.com',
-            'timeout' => 45,
+            'timeout' => 30,
         ]);
     }
 
     /**
-     * Ask a question and receive a grounded RAG answer.
+     * Ask a question and receive a grounded RAG answer with conversational memory.
      *
      * @param string $question User's question
      * @param string|null $sessionId Optional chat session identifier
@@ -64,7 +64,14 @@ class RAGService
             ];
         }
 
-        // 1. Check if knowledge base has any successfully processed documents
+        if (empty($sessionId)) {
+            $sessionId = 'sess_' . bin2hex(random_bytes(6));
+        }
+
+        // 1. Fetch recent conversation history to provide memory context
+        $chatHistory = $this->getRecentChatHistory($sessionId, 6);
+
+        // 2. Check if knowledge base has any successfully processed documents
         $completedDocCount = Document::where('processing_status', 'completed')->count();
         if ($completedDocCount === 0) {
             $emptyMsg = "Your tourism knowledge base is empty. Upload your first tourism document to get started.";
@@ -77,13 +84,16 @@ class RAGService
             ];
         }
 
-        // 2. Generate embedding for the question
-        $questionVector = $this->embedder->generateEmbedding($question, 'RETRIEVAL_QUERY');
+        // 3. Contextualize query if there is conversation history (e.g. resolve "its location" -> "location of Ethiopian Skylight Hotel")
+        $retrievalQuery = $this->reformulateQuestionForRetrieval($question, $chatHistory);
 
-        // 3. Retrieve relevant chunks using cosine similarity
+        // 4. Generate embedding for the retrieval query
+        $questionVector = $this->embedder->generateEmbedding($retrievalQuery, 'RETRIEVAL_QUERY');
+
+        // 5. Retrieve relevant chunks using cosine similarity
         $relevantChunks = $this->retrieveRelevantChunks($questionVector);
 
-        // 4. If no relevant chunks found above threshold, return honest fallback
+        // 6. If no relevant chunks found above threshold, return honest fallback
         if (empty($relevantChunks)) {
             $fallbackMsg = "I couldn't find sufficient information about this topic in my current tourism knowledge base. Please try another question or check back after more documents have been added.";
             $this->logChatMessages($sessionId, $question, $fallbackMsg, []);
@@ -95,7 +105,7 @@ class RAGService
             ];
         }
 
-        // 5. Build context & sources list
+        // 7. Build context & sources list
         $contextBlocks = [];
         $sources = [];
         $seenDocIds = [];
@@ -122,10 +132,10 @@ class RAGService
 
         $contextText = implode("\n\n", $contextBlocks);
 
-        // 6. Generate answer using Gemini with grounded context
-        $answer = $this->generateGroundedAnswer($question, $contextText, $sources);
+        // 8. Generate answer using Gemini with grounded context and conversation history
+        $answer = $this->generateGroundedAnswer($question, $contextText, $sources, $chatHistory);
 
-        // 7. Save message to chat history
+        // 9. Save message to chat history
         $this->logChatMessages($sessionId, $question, $answer, $sources);
 
         return [
@@ -179,9 +189,97 @@ class RAGService
     }
 
     /**
-     * Generate grounded response using Google Gemini API.
+     * Fetch recent conversation turns for session memory.
      */
-    protected function generateGroundedAnswer(string $question, string $context, array $sources): string
+    protected function getRecentChatHistory(?string $sessionId, int $limit = 6): array
+    {
+        if (empty($sessionId)) {
+            return [];
+        }
+
+        return ChatMessage::where('session_id', $sessionId)
+            ->orderBy('created_at', 'desc')
+            ->limit($limit)
+            ->get()
+            ->reverse()
+            ->values()
+            ->map(function ($msg) {
+                return [
+                    'role' => $msg->role,
+                    'content' => $msg->content,
+                ];
+            })
+            ->toArray();
+    }
+
+    /**
+     * Reformulate a follow-up question into a standalone retrieval query using dialogue history.
+     */
+    protected function reformulateQuestionForRetrieval(string $question, array $chatHistory): string
+    {
+        if (empty($chatHistory) || empty($this->apiKey)) {
+            return $question;
+        }
+
+        // Format recent turns
+        $historyLines = [];
+        foreach ($chatHistory as $msg) {
+            $role = $msg['role'] === 'user' ? 'User' : 'Assistant';
+            $content = mb_substr($msg['content'], 0, 300);
+            $historyLines[] = "{$role}: {$content}";
+        }
+        $historyText = implode("\n", $historyLines);
+
+        $prompt = <<<PROMPT
+You are a search query reformulator for an Ethiopian tourism and travel assistant.
+Given the previous conversation turns and the user's latest follow-up question, rewrite the question into a single standalone search query that explicitly mentions the specific destination, hotel, resort, historic church, or entity being discussed.
+If the question is already fully standalone, return it as-is.
+Return ONLY the standalone search query without any explanation, markdown, or quotation marks.
+
+Conversation History:
+{$historyText}
+
+Follow-up Question: {$question}
+Standalone Query:
+PROMPT;
+
+        try {
+            $url = "/v1beta/models/gemini-3.1-flash-lite:generateContent?key={$this->apiKey}";
+            $response = $this->httpClient->post($url, [
+                'headers' => ['Content-Type' => 'application/json'],
+                'json' => [
+                    'contents' => [
+                        ['role' => 'user', 'parts' => [['text' => $prompt]]],
+                    ],
+                    'generationConfig' => [
+                        'temperature' => 0.0,
+                        'maxOutputTokens' => 80,
+                    ],
+                ],
+                'timeout' => 8,
+            ]);
+
+            $data = json_decode($response->getBody()->getContents(), true);
+            $rewritten = trim($data['candidates'][0]['content']['parts'][0]['text'] ?? '');
+
+            if (!empty($rewritten) && mb_strlen($rewritten) > 3) {
+                Log::info("Conversational query reformulated", [
+                    'original' => $question,
+                    'standalone' => $rewritten,
+                ]);
+                return $rewritten;
+            }
+        } catch (Exception $e) {
+            Log::warning("Query reformulation skipped due to: " . $e->getMessage());
+        }
+
+        return $question;
+    }
+
+    /**
+     * Generate grounded response using Google Gemini API with conversational history.
+     */
+    protected function generateGroundedAnswer(string $question, string $context, array $sources, array $chatHistory = []): string
     {
         if (empty($this->apiKey)) {
             // Local fallback when API key is not yet set in .env
@@ -192,36 +290,47 @@ class RAGService
                 "*(Configure GEMINI_API_KEY in backend/.env for AI synthesized responses).*";
         }
 
+        $historyBlock = '';
+        if (!empty($chatHistory)) {
+            $historyLines = [];
+            foreach ($chatHistory as $msg) {
+                $role = $msg['role'] === 'user' ? 'User' : 'Assistant';
+                $historyLines[] = "{$role}: {$msg['content']}";
+            }
+            $historyBlock = "CONVERSATION HISTORY (RECENT TURNS):\n=========================================\n" . implode("\n", $historyLines) . "\n=========================================\n\n";
+        }
+
         $systemPrompt = <<<PROMPT
 You are the **Ethiopian Tourist Destination Assistant**, a friendly, highly knowledgeable, and accurate AI travel guide for Ethiopia.
 
 Your job is to answer user questions about Ethiopian tourist destinations, historic sites, national parks, lakes, cultural events, hotels, resorts, and travel agencies.
 
-CRITICAL INSTRUCTIONS:
-1. Base your answer EXCLUSIVELY on the provided context retrieved from the database.
-2. Do not invent facts, destinations, historical dates, or contact details not supported by the context.
-3. If the context does not contain enough information to answer the question, clearly state:
+CONVERSATIONAL MEMORY & GROUNDING INSTRUCTIONS:
+1. You have access to recent CONVERSATION HISTORY. Maintain natural conversational continuity across turns.
+2. If the user asks a follow-up question referencing a destination or entity discussed earlier (using pronouns such as "it", "its", "their", "the hotel", "the park", "that place"), resolve the reference using the CONVERSATION HISTORY.
+3. Base all factual information (names, locations, addresses, phone numbers, ratings, historical facts) STRICTLY on the RETRIEVED TOURISM DOCUMENTS provided below.
+4. Do not invent facts, destinations, or contact details not supported by the context.
+5. If the retrieved context does not contain enough information to answer the question, clearly state:
    "I couldn't find sufficient information about this topic in my current tourism knowledge base. Please try another question or check back after more documents have been added."
-4. Format long answers cleanly using clear paragraphs, bold highlights, and bullet points where helpful.
-5. Provide a warm, welcoming tone suitable for tourists and travelers exploring Ethiopia.
+6. Format answers cleanly using markdown paragraphs, bold titles, and bullet points.
+7. Provide a warm, welcoming tone reflecting authentic Ethiopian hospitality.
 PROMPT;
 
         $userPrompt = <<<PROMPT
-CONTEXT FROM RETRIEVED TOURISM DOCUMENTS:
+{$historyBlock}CONTEXT FROM RETRIEVED TOURISM DOCUMENTS:
 =========================================
 {$context}
 =========================================
 
-USER QUESTION:
+LATEST USER QUESTION:
 {$question}
 PROMPT;
 
         $modelsToTry = array_unique([
             $this->model,
-            'gemini-3.5-flash',
+            'gemini-3.1-flash-lite',
             'gemini-flash-lite-latest',
-            'gemini-3.5-flash-lite',
-            'gemini-3.1-flash-lite'
+            'gemini-3.5-flash',
         ]);
 
         $lastError = null;

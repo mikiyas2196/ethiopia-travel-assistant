@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Route;
 Route::post('/chat', [ChatController::class, 'chat']);
 Route::get('/chat/suggestions', [ChatController::class, 'suggestions']);
 Route::get('/chat/history/{sessionId}', [ChatController::class, 'history']);
+Route::delete('/chat/session/{sessionId}', [ChatController::class, 'clearSession']);
 
 // Public Knowledge Base Metadata & Statistics (used by homepage/status)
 Route::get('/knowledge-base/statistics', [KnowledgeBaseController::class, 'statistics']);

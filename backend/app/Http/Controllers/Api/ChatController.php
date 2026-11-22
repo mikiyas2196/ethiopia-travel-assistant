@@ -81,4 +81,22 @@ class ChatController extends Controller
             'messages' => $messages,
         ]);
     }
+
+    /**
+     * Clear all messages and the session record.
+     */
+    public function clearSession(string $sessionId): JsonResponse
+    {
+        $session = ChatSession::where('session_id', $sessionId)->first();
+
+        if ($session) {
+            $session->messages()->delete();
+            $session->delete();
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Chat session history cleared successfully.',
+        ]);
+    }
 }

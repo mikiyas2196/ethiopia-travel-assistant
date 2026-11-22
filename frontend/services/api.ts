@@ -80,6 +80,17 @@ export const api = {
     }));
   },
 
+  async clearChatSession(sessionId: string): Promise<boolean> {
+    try {
+      await request(`/chat/session/${sessionId}`, {
+        method: 'DELETE',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   // Knowledge Base Metadata APIs
   async getStatistics(): Promise<KnowledgeBaseStats> {
     const res = await request<{ success: boolean; statistics: KnowledgeBaseStats }>('/knowledge-base/statistics');
