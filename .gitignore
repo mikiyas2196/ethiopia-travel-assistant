@@ -1,0 +1,35 @@
+# Root .gitignore for Ethiopian Tourist Destination Assistant
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependencies
+vendor/
+node_modules/
+.pnp
+.pnp.js
+
+# Storage & Cache
+backend/storage/*.key
+backend/storage/app/documents/*
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/storage/logs/*
+!backend/storage/app/documents/.gitkeep
+
+# Next.js Build
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Testing
+backend/.phpunit.result.cache
+
+# OS Files
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
