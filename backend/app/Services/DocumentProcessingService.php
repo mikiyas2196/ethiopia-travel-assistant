@@ -39,7 +39,8 @@ class DocumentProcessingService
      */
     public function process(Document $document): Document
     {
-        @set_time_limit(300);
+        @set_time_limit(0);
+        @ini_set('memory_limit', '1024M');
 
         $document->update([
             'processing_status' => 'processing',

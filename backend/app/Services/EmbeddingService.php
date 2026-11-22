@@ -105,6 +105,8 @@ class EmbeddingService
      */
     public function generateBatchEmbeddings(array $texts, string $taskType = 'RETRIEVAL_DOCUMENT'): array
     {
+        @set_time_limit(0);
+
         if (empty($texts)) {
             return [];
         }
@@ -119,11 +121,13 @@ class EmbeddingService
         $chunks = array_chunk($texts, $batchSize);
 
         foreach ($chunks as $bIndex => $chunk) {
+            @set_time_limit(0);
             $maxRetries = 5;
             $attempt = 0;
             $batchSuccess = false;
 
             while (!$batchSuccess && $attempt < $maxRetries) {
+                @set_time_limit(0);
                 $attempt++;
                 try {
                     $requests = [];

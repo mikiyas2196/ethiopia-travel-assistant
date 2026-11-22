@@ -195,7 +195,17 @@ export const api = {
       body: formData,
     });
 
-    const data = await response.json();
+    let data: any = {};
+    try {
+      data = await response.json();
+    } catch {
+      if (response.status === 413) {
+        data = { message: 'The uploaded file exceeds the server upload limit. Maximum size is 70MB.' };
+      } else {
+        data = { message: response.statusText || `Upload failed with status ${response.status}` };
+      }
+    }
+
     if (!response.ok && response.status !== 202) {
       throw new Error(data.message || 'Upload failed');
     }

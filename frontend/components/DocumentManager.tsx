@@ -86,6 +86,31 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
     fetchDocuments();
   }, [categoryFilter, fileTypeFilter, statusFilter, currentPage, isAuthenticated]);
 
+  // Auto-refresh periodically when any document is processing in background
+  useEffect(() => {
+    const hasProcessing = documents.some(
+      (d) => d.processing_status === 'pending' || d.processing_status === 'processing'
+    );
+
+    if (!hasProcessing) return;
+
+    const timer = setInterval(() => {
+      api.getDocuments({
+        search: search.trim() || undefined,
+        category: categoryFilter || undefined,
+        file_type: fileTypeFilter || undefined,
+        status: statusFilter || undefined,
+        page: currentPage,
+      }).then((res) => {
+        setDocuments(res.data);
+        setTotalPages(res.meta.last_page);
+        setTotalCount(res.meta.total);
+      }).catch(() => {});
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [documents, search, categoryFilter, fileTypeFilter, statusFilter, currentPage]);
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setCurrentPage(1);

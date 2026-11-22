@@ -115,13 +115,15 @@ class ChunkingService
         $currentChunk = '';
         $currentMetadata = $baseMetadata;
         $chunkIndex = 0;
+        // Optimal size for 2-3 full structured records per chunk (~800 tokens, well below 2048 model limit)
+        $recordTargetSize = 3400;
 
         foreach ($blocks as $block) {
             if (preg_match('/=== Sheet: ([^=\n]+) ===/', $block, $sheetMatch)) {
                 $currentMetadata['sheet'] = trim($sheetMatch[1]);
             }
 
-            if (mb_strlen($currentChunk) + mb_strlen($block) + 2 > $this->targetChunkSize && !empty(trim($currentChunk))) {
+            if (mb_strlen($currentChunk) + mb_strlen($block) + 2 > $recordTargetSize && !empty(trim($currentChunk))) {
                 $chunks[] = $this->formatChunk($currentChunk, $chunkIndex++, $currentMetadata);
                 $currentChunk = $block;
             } else {

@@ -22,8 +22,14 @@ class ExcelExtractionService
             throw new Exception("Spreadsheet file not found at path: {$filePath}");
         }
 
+        @set_time_limit(300);
+        @ini_set('memory_limit', '1024M');
+
         try {
-            $spreadsheet = IOFactory::load($filePath);
+            $reader = IOFactory::createReaderForFile($filePath);
+            $reader->setReadDataOnly(true);
+            $reader->setReadEmptyCells(false);
+            $spreadsheet = $reader->load($filePath);
             $sheetCount = $spreadsheet->getSheetCount();
 
             if ($sheetCount === 0) {

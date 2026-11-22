@@ -47,6 +47,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     fetchStats();
   }, []);
 
+  // Auto-refresh metrics while documents are processing
+  useEffect(() => {
+    if (!stats || stats.pending_documents === 0) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      api.getStatistics().then(setStats).catch(() => {});
+    }, 4000);
+
+    return () => clearInterval(timer);
+  }, [stats?.pending_documents]);
+
   if (loading && !stats) {
     return (
       <div className="max-w-6xl mx-auto px-4 py-12 flex flex-col items-center justify-center min-h-[400px]">

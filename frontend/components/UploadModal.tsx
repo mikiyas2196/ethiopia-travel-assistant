@@ -51,8 +51,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       return;
     }
 
-    if (file.size > 50 * 1024 * 1024) {
-      setError('File size exceeds the 50MB limit.');
+    if (file.size > 70 * 1024 * 1024) {
+      setError('File size exceeds the 70MB limit.');
       return;
     }
 

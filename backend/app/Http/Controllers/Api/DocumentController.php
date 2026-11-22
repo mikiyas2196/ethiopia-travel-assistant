@@ -68,15 +68,18 @@ class DocumentController extends Controller
     }
 
     /**
-     * Store and immediately process a new uploaded document.
+     * Store and process a new uploaded document.
      */
     public function store(Request $request): JsonResponse
     {
+        @set_time_limit(600);
+        @ini_set('memory_limit', '1024M');
+
         $request->validate([
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'category' => 'required|string',
-            'file' => 'required|file|max:51200', // max 50MB
+            'file' => 'required|file|max:71680', // Support up to ~70MB
             'source_name' => 'nullable|string|max:255',
             'source_url' => 'nullable|url|max:500',
         ]);
@@ -111,24 +114,14 @@ class DocumentController extends Controller
             'source_url' => $request->source_url,
         ]);
 
-        // Process the document immediately
-        try {
-            $this->processor->process($document);
-            $document->refresh();
+        // Dispatch background extraction and vector embedding generation
+        $this->dispatchBackgroundProcessing($document->id);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Document uploaded and processed successfully.',
-                'document' => $document,
-            ], 201);
-
-        } catch (Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Document was saved, but processing encountered an error: ' . $e->getMessage(),
-                'document' => $document->fresh(),
-            ], 202);
-        }
+        return response()->json([
+            'success' => true,
+            'message' => 'Document uploaded successfully. Processing chunks and embeddings in background.',
+            'document' => $document->fresh(),
+        ], 201);
     }
 
     /**
@@ -223,20 +216,18 @@ class DocumentController extends Controller
         $document->save();
 
         if ($reprocessNeeded) {
-            try {
-                $this->processor->process($document);
-            } catch (Exception $e) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Document updated, but reprocessing failed: ' . $e->getMessage(),
-                    'document' => $document->fresh(),
-                ], 202);
-            }
+            $document->update([
+                'processing_status' => 'pending',
+                'processing_error' => null,
+            ]);
+            $this->dispatchBackgroundProcessing($document->id);
         }
 
         return response()->json([
             'success' => true,
-            'message' => 'Document updated successfully.',
+            'message' => $reprocessNeeded 
+                ? 'Document updated successfully. Background processing started.' 
+                : 'Document metadata updated successfully.',
             'document' => $document->fresh(),
         ]);
     }
@@ -264,7 +255,7 @@ class DocumentController extends Controller
     }
 
     /**
-     * Retry or reprocess document extraction and embeddings.
+     * Retry or reprocess document extraction and embeddings in the background.
      */
     public function reprocess(int $id): JsonResponse
     {
@@ -277,20 +268,36 @@ class DocumentController extends Controller
             ], 404);
         }
 
-        try {
-            $this->processor->process($document);
+        $document->update([
+            'processing_status' => 'pending',
+            'processing_error' => null,
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Document reprocessed successfully.',
-                'document' => $document->fresh(),
-            ]);
-        } catch (Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Reprocessing failed: ' . $e->getMessage(),
-                'document' => $document->fresh(),
-            ], 500);
+        $this->dispatchBackgroundProcessing($document->id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Document reprocessing initiated in the background.',
+            'document' => $document->fresh(),
+        ]);
+    }
+
+    /**
+     * Dispatch background CLI process for document extraction, chunking, and embedding.
+     */
+    protected function dispatchBackgroundProcessing(int $documentId): void
+    {
+        $artisanPath = base_path('artisan');
+        $phpBinary = PHP_BINARY;
+
+        if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            // Windows: use start /B to detach background worker
+            $cmd = "start /B \"\" \"{$phpBinary}\" \"{$artisanPath}\" document:process {$documentId} > NUL 2>&1";
+            @pclose(@popen($cmd, 'r'));
+        } else {
+            // Linux/macOS
+            $cmd = "\"{$phpBinary}\" \"{$artisanPath}\" document:process {$documentId} > /dev/null 2>&1 &";
+            @exec($cmd);
         }
     }
 }

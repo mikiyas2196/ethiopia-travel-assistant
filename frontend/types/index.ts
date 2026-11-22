@@ -48,6 +48,7 @@ export interface KnowledgeBaseStats {
   total_documents: number;
   completed_documents: number;
   pending_documents: number;
+  processing_documents?: number;
   failed_documents: number;
   total_chunks: number;
   total_embeddings: number;
