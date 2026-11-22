@@ -52,5 +52,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/admin/users', [UserController::class, 'index']);
     Route::post('/admin/users', [UserController::class, 'store']);
     Route::put('/admin/users/{id}/permissions', [UserController::class, 'updatePermissions']);
+    Route::post('/admin/users/bulk-permissions', [UserController::class, 'updateBulkPermissions']);
     Route::delete('/admin/users/{id}', [UserController::class, 'destroy']);
 });

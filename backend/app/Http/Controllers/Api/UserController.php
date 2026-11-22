@@ -209,4 +209,84 @@ class UserController extends Controller
             'message' => "User '{$userName}' has been deleted.",
         ]);
     }
+
+    /**
+     * Bulk update permissions for multiple or all users (Admin only).
+     */
+    public function updateBulkPermissions(Request $request): JsonResponse
+    {
+        $currentUser = $request->user();
+
+        if (!$currentUser || !$currentUser->isAdmin()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: Administrator access required.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'user_ids' => ['nullable', 'array'],
+            'user_ids.*' => ['integer'],
+            'target_all' => ['nullable', 'boolean'],
+            'action' => ['nullable', 'string', 'in:grant_all,revoke_all,custom'],
+            'can_view_documents' => ['nullable', 'boolean'],
+            'can_add_documents' => ['nullable', 'boolean'],
+            'can_edit_documents' => ['nullable', 'boolean'],
+            'can_delete_documents' => ['nullable', 'boolean'],
+        ]);
+
+        $query = User::where('id', '!=', 1); // Never demote primary admin
+
+        if (empty($validated['target_all']) && !empty($validated['user_ids'])) {
+            $query->whereIn('id', $validated['user_ids']);
+        }
+
+        $action = $validated['action'] ?? 'custom';
+        $updates = [];
+
+        if ($action === 'grant_all') {
+            $updates = [
+                'can_view_documents' => true,
+                'can_add_documents' => true,
+                'can_edit_documents' => true,
+                'can_delete_documents' => true,
+            ];
+        } elseif ($action === 'revoke_all') {
+            $updates = [
+                'can_view_documents' => false,
+                'can_add_documents' => false,
+                'can_edit_documents' => false,
+                'can_delete_documents' => false,
+            ];
+        } else {
+            // Custom toggles
+            if (isset($validated['can_view_documents'])) {
+                $updates['can_view_documents'] = (bool)$validated['can_view_documents'];
+            }
+            if (isset($validated['can_add_documents'])) {
+                $updates['can_add_documents'] = (bool)$validated['can_add_documents'];
+            }
+            if (isset($validated['can_edit_documents'])) {
+                $updates['can_edit_documents'] = (bool)$validated['can_edit_documents'];
+            }
+            if (isset($validated['can_delete_documents'])) {
+                $updates['can_delete_documents'] = (bool)$validated['can_delete_documents'];
+            }
+        }
+
+        if (empty($updates)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No permission updates specified.',
+            ], 422);
+        }
+
+        $affectedCount = $query->update($updates);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Successfully updated permissions for {$affectedCount} user(s).",
+            'affected_count' => $affectedCount,
+        ]);
+    }
 }

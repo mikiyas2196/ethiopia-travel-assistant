@@ -166,6 +166,22 @@ export const api = {
     return res.user;
   },
 
+  async updateBulkPermissions(params: {
+    user_ids?: number[];
+    target_all?: boolean;
+    action?: 'grant_all' | 'revoke_all' | 'custom';
+    can_view_documents?: boolean;
+    can_add_documents?: boolean;
+    can_edit_documents?: boolean;
+    can_delete_documents?: boolean;
+  }): Promise<{ success: boolean; message: string; affected_count: number }> {
+    return request('/admin/users/bulk-permissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+  },
+
   async deleteUser(userId: number): Promise<{ success: boolean; message: string }> {
     return request(`/admin/users/${userId}`, {
       method: 'DELETE',

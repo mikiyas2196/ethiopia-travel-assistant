@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   Users,
@@ -14,6 +14,12 @@ import {
   Edit,
   AlertCircle,
   CheckCircle2,
+  CheckSquare,
+  Square,
+  MinusSquare,
+  Sparkles,
+  Search,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { AdminUser } from '../types';
 import { api } from '../services/api';
@@ -32,7 +38,14 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Search filter
+  const [userSearch, setUserSearch] = useState('');
+
+  // Bulk Selection
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   // New User Form State
   const [showAddUser, setShowAddUser] = useState(false);
@@ -88,8 +101,154 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
     if (isOpen) {
       fetchUsers();
       setFeedbackMsg(null);
+      setSelectedIds(new Set());
     }
   }, [isOpen]);
+
+  // Manageable users (exclude primary admin ID 1 from batch demotions)
+  const nonPrimaryUsers = useMemo(() => users.filter((u) => u.id !== 1), [users]);
+
+  // Filtered users by search keyword
+  const filteredUsers = useMemo(() => {
+    if (!userSearch.trim()) return users;
+    const q = userSearch.toLowerCase();
+    return users.filter(
+      (u) => u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+    );
+  }, [users, userSearch]);
+
+  const allNonPrimarySelected =
+    nonPrimaryUsers.length > 0 &&
+    nonPrimaryUsers.every((u) => selectedIds.has(u.id));
+
+  const someSelected =
+    selectedIds.size > 0 && !allNonPrimarySelected;
+
+  const handleToggleSelectAll = () => {
+    if (allNonPrimarySelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(nonPrimaryUsers.map((u) => u.id)));
+    }
+  };
+
+  const handleToggleSelectUser = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // Bulk Apply Permission Action
+  const handleBulkAction = async (action: 'grant_all' | 'revoke_all' | 'view_only' | 'view_add') => {
+    const targetIds = selectedIds.size > 0 ? Array.from(selectedIds) : nonPrimaryUsers.map((u) => u.id);
+    if (targetIds.length === 0) return;
+
+    setBulkActionLoading(true);
+    setFeedbackMsg(null);
+
+    try {
+      if (action === 'grant_all') {
+        await api.updateBulkPermissions({
+          user_ids: targetIds,
+          action: 'grant_all',
+        });
+        setFeedbackMsg({
+          type: 'success',
+          text: `Granted all permissions (View, Add, Edit, Delete) to ${targetIds.length} user(s).`,
+        });
+      } else if (action === 'revoke_all') {
+        await api.updateBulkPermissions({
+          user_ids: targetIds,
+          action: 'revoke_all',
+        });
+        setFeedbackMsg({
+          type: 'success',
+          text: `Revoked all document permissions from ${targetIds.length} user(s).`,
+        });
+      } else if (action === 'view_only') {
+        await api.updateBulkPermissions({
+          user_ids: targetIds,
+          can_view_documents: true,
+          can_add_documents: false,
+          can_edit_documents: false,
+          can_delete_documents: false,
+        });
+        setFeedbackMsg({
+          type: 'success',
+          text: `Set ${targetIds.length} user(s) to View-Only access.`,
+        });
+      } else if (action === 'view_add') {
+        await api.updateBulkPermissions({
+          user_ids: targetIds,
+          can_view_documents: true,
+          can_add_documents: true,
+          can_edit_documents: true,
+          can_delete_documents: false,
+        });
+        setFeedbackMsg({
+          type: 'success',
+          text: `Granted View + Upload permissions to ${targetIds.length} user(s).`,
+        });
+      }
+
+      await fetchUsers();
+    } catch (err: any) {
+      setFeedbackMsg({
+        type: 'error',
+        text: err.message || 'Failed to update bulk permissions.',
+      });
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  // Column-wide bulk toggle for selected (or all) users
+  const handleBulkColumnToggle = async (
+    field: 'can_view_documents' | 'can_add_documents' | 'can_edit_documents' | 'can_delete_documents',
+    enable: boolean
+  ) => {
+    const targetIds = selectedIds.size > 0 ? Array.from(selectedIds) : nonPrimaryUsers.map((u) => u.id);
+    if (targetIds.length === 0) return;
+
+    setBulkActionLoading(true);
+    setFeedbackMsg(null);
+
+    try {
+      await api.updateBulkPermissions({
+        user_ids: targetIds,
+        [field]: enable,
+      });
+
+      const label =
+        field === 'can_view_documents'
+          ? 'View'
+          : field === 'can_add_documents'
+          ? 'Upload / Add'
+          : field === 'can_edit_documents'
+          ? 'Edit'
+          : 'Delete';
+
+      setFeedbackMsg({
+        type: 'success',
+        text: `${enable ? 'Enabled' : 'Disabled'} ${label} permission for ${targetIds.length} user(s).`,
+      });
+
+      await fetchUsers();
+    } catch (err: any) {
+      setFeedbackMsg({
+        type: 'error',
+        text: err.message || 'Failed to update permission column.',
+      });
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
 
   const handleTogglePermission = (
     userId: number,
@@ -100,25 +259,6 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
       [userId]: {
         ...prev[userId],
         [field]: !prev[userId]?.[field],
-      },
-    }));
-  };
-
-  const handleRoleChange = (userId: number, role: 'admin' | 'user') => {
-    setUserPerms((prev) => ({
-      ...prev,
-      [userId]: {
-        ...prev[userId],
-        role,
-        // If promoted to admin, enable all permissions by default
-        ...(role === 'admin'
-          ? {
-              can_view_documents: true,
-              can_add_documents: true,
-              can_edit_documents: true,
-              can_delete_documents: true,
-            }
-          : {}),
       },
     }));
   };
@@ -213,28 +353,33 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl border border-[#e8ded1] w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
-        {/* Header */}
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl shadow-2xl border border-[#e8ded1] w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+        {/* Modal Header */}
         <div className="px-6 py-4 bg-[#faf7f2] border-b border-[#e8ded1] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#0d3d24] text-[#f3a628] flex items-center justify-center shadow-sm">
-              <Shield className="w-5 h-5" />
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-[#0d3d24] text-[#f3a628] flex items-center justify-center shadow-md">
+              <Shield className="w-6 h-6" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-[#0d3d24]">
-                User Permissions & Access Control
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-[#0d3d24]">
+                  User Permissions & Access Control
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#d48b14]/15 text-[#d48b14] border border-[#d48b14]/30">
+                  {users.length} Users
+                </span>
+              </div>
               <p className="text-xs text-[#5e6660]">
-                Control which users can view, upload, edit, and delete knowledge base documents
+                Manage individual or bulk access to view, upload, edit, and delete tourism knowledge base documents
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <button
               onClick={() => setShowAddUser(!showAddUser)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0d3d24] text-white text-xs font-semibold hover:bg-[#154d2e] transition shadow-sm"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0d3d24] text-white text-xs font-semibold hover:bg-[#154d2e] transition shadow-sm"
             >
               <UserPlus className="w-3.5 h-3.5 text-[#f3a628]" />
               <span>{showAddUser ? 'Close Form' : 'Add New User'}</span>
@@ -242,7 +387,8 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
 
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-[#5e6660] hover:text-red-600 hover:bg-red-50 transition"
+              className="p-2 rounded-xl text-[#5e6660] hover:text-red-600 hover:bg-red-50 transition"
+              title="Close modal"
             >
               <X className="w-5 h-5" />
             </button>
@@ -252,7 +398,7 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
         {/* Feedback Alert */}
         {feedbackMsg && (
           <div
-            className={`mx-6 mt-4 p-3 rounded-xl flex items-center gap-2 text-xs font-medium border ${
+            className={`mx-6 mt-4 p-3 rounded-2xl flex items-center gap-2.5 text-xs font-medium border ${
               feedbackMsg.type === 'success'
                 ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                 : 'bg-red-50 text-red-800 border-red-200'
@@ -269,6 +415,93 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Quick Bulk Management Panel */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-[#faf7f2] to-[#f4efe6] border border-[#e8ded1] shadow-xs">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-[#d48b14]" />
+                <span className="text-xs font-bold uppercase tracking-wider text-[#0d3d24]">
+                  Bulk Permission Manager
+                </span>
+                <span className="text-xs text-[#5e6660]">
+                  ({selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Applying to all non-admin users'})
+                </span>
+              </div>
+
+              {/* Select All Toggle */}
+              <button
+                type="button"
+                onClick={handleToggleSelectAll}
+                className="flex items-center gap-1.5 text-xs font-semibold text-[#0d3d24] hover:text-[#d48b14] transition cursor-pointer self-start md:self-auto"
+              >
+                {allNonPrimarySelected ? (
+                  <CheckSquare className="w-4 h-4 text-[#0d3d24]" />
+                ) : someSelected ? (
+                  <MinusSquare className="w-4 h-4 text-[#d48b14]" />
+                ) : (
+                  <Square className="w-4 h-4 text-[#8c948e]" />
+                )}
+                <span>
+                  {allNonPrimarySelected ? 'Deselect All Users' : 'Select All Users (Mark All)'}
+                </span>
+              </button>
+            </div>
+
+            {/* Quick Bulk Action Buttons */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={bulkActionLoading}
+                onClick={() => handleBulkAction('grant_all')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0d3d24] text-white text-xs font-semibold hover:bg-[#154d2e] disabled:opacity-50 transition shadow-xs"
+                title="Grant View, Add, Edit, and Delete to selected users"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#f3a628]" />
+                <span>Grant All Permissions</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={bulkActionLoading}
+                onClick={() => handleBulkAction('view_add')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#e8ded1] text-[#0d3d24] text-xs font-semibold hover:bg-[#faf7f2] disabled:opacity-50 transition shadow-xs"
+                title="Grant View and Upload access"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#d48b14]" />
+                <span>Grant View + Upload</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={bulkActionLoading}
+                onClick={() => handleBulkAction('view_only')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#e8ded1] text-[#0d3d24] text-xs font-semibold hover:bg-[#faf7f2] disabled:opacity-50 transition shadow-xs"
+                title="Set to View-Only access"
+              >
+                <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Set View Only</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={bulkActionLoading}
+                onClick={() => handleBulkAction('revoke_all')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-50 text-red-700 border border-red-200 text-xs font-semibold hover:bg-red-100 disabled:opacity-50 transition shadow-xs"
+                title="Revoke all document permissions"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                <span>Revoke All Permissions</span>
+              </button>
+
+              {bulkActionLoading && (
+                <div className="flex items-center gap-1 text-xs text-[#0d3d24] font-medium ml-2">
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Applying bulk changes...</span>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* New User Form Collapse */}
           {showAddUser && (
             <div className="p-5 rounded-2xl bg-[#faf7f2] border border-[#e8ded1] shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
@@ -374,7 +607,7 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowAddUser(false)}
-                    className="px-3 py-1.5 rounded-xl text-xs font-medium text-[#5e6660] hover:bg-[#e8ded1]/50"
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-[#5e6660] hover:bg-[#e8ded1]/50"
                   >
                     Cancel
                   </button>
@@ -391,187 +624,296 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
             </div>
           )}
 
-          {/* Users List & Permissions Grid */}
+          {/* User Search & Table Header */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-[#0d3d24] flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-[#d48b14]" />
-                System Users ({users.length})
-              </h4>
-              <button
-                onClick={fetchUsers}
-                className="text-xs text-[#5e6660] hover:text-[#0d3d24] flex items-center gap-1 font-medium"
-              >
-                <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                <span>Refresh</span>
-              </button>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[#0d3d24]">
+                  Registered User Accounts ({users.length})
+                </h4>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Search Bar */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-[#8c948e] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={userSearch}
+                    onChange={(e) => setUserSearch(e.target.value)}
+                    placeholder="Search by name or email..."
+                    className="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-[#e8ded1] bg-white focus:outline-none focus:ring-1 focus:ring-[#0d3d24] text-[#1e2420] w-52 sm:w-64"
+                  />
+                </div>
+
+                <button
+                  onClick={fetchUsers}
+                  className="p-1.5 rounded-xl border border-[#e8ded1] bg-white text-[#5e6660] hover:text-[#0d3d24] transition shadow-2xs"
+                  title="Refresh users"
+                >
+                  <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
             </div>
 
             {loading && users.length === 0 ? (
               <div className="py-12 flex flex-col items-center justify-center text-center">
                 <RotateCw className="w-6 h-6 text-[#0d3d24] animate-spin mb-2" />
-                <p className="text-xs text-[#5e6660]">Loading users...</p>
+                <p className="text-xs text-[#5e6660]">Loading users list...</p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {users.map((u) => {
-                  const perms = userPerms[u.id] || {
-                    role: u.role,
-                    can_view_documents: u.can_view_documents,
-                    can_add_documents: u.can_add_documents,
-                    can_edit_documents: u.can_edit_documents,
-                    can_delete_documents: u.can_delete_documents,
-                  };
-                  const isPrimaryAdmin = u.id === 1;
-
-                  return (
-                    <div
-                      key={u.id}
-                      className="p-4 rounded-2xl bg-white border border-[#e8ded1] shadow-sm hover:border-[#0d3d24]/30 transition flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                    >
-                      {/* User Info */}
-                      <div className="flex items-start gap-3 min-w-[200px]">
-                        <div className="w-9 h-9 rounded-xl bg-[#0d3d24]/10 text-[#0d3d24] flex items-center justify-center shrink-0 font-bold text-sm">
-                          {u.name.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm text-[#0d3d24]">
-                              {u.name}
-                            </span>
-                            {isPrimaryAdmin ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#d48b14]/15 text-[#d48b14] border border-[#d48b14]/30">
-                                Primary Admin
-                              </span>
-                            ) : perms.role === 'admin' ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                Admin
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700">
-                                User
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-[#5e6660]">{u.email}</p>
-                        </div>
-                      </div>
-
-                      {/* Permissions Toggles */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        {/* Can View */}
+              <div className="overflow-x-auto rounded-2xl border border-[#e8ded1] shadow-2xs">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-[#f4efe6] text-[#0d3d24] font-semibold border-b border-[#e8ded1]">
+                    <tr>
+                      <th className="py-3 px-3.5 w-10 text-center">
                         <button
                           type="button"
-                          disabled={isPrimaryAdmin}
-                          onClick={() => handleTogglePermission(u.id, 'can_view_documents')}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition border ${
-                            perms.can_view_documents
-                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                              : 'bg-gray-50 text-gray-500 border-gray-200 opacity-60'
-                          } ${isPrimaryAdmin ? 'cursor-not-allowed opacity-90' : 'cursor-pointer hover:shadow-xs'}`}
-                          title="Permission to view knowledge base documents"
+                          onClick={handleToggleSelectAll}
+                          className="cursor-pointer"
+                          title="Select / Deselect all users"
                         >
-                          <Eye className="w-3.5 h-3.5" />
+                          {allNonPrimarySelected ? (
+                            <CheckSquare className="w-4 h-4 text-[#0d3d24]" />
+                          ) : someSelected ? (
+                            <MinusSquare className="w-4 h-4 text-[#d48b14]" />
+                          ) : (
+                            <Square className="w-4 h-4 text-[#8c948e]" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="py-3 px-3">User & Email</th>
+                      <th className="py-3 px-2 text-center">Role</th>
+                      <th className="py-3 px-2 text-center">
+                        <div className="flex items-center justify-center gap-1">
                           <span>View</span>
-                        </button>
-
-                        {/* Can Add */}
-                        <button
-                          type="button"
-                          disabled={isPrimaryAdmin}
-                          onClick={() => handleTogglePermission(u.id, 'can_add_documents')}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition border ${
-                            perms.can_add_documents
-                              ? 'bg-blue-50 text-blue-800 border-blue-300'
-                              : 'bg-gray-50 text-gray-500 border-gray-200 opacity-60'
-                          } ${isPrimaryAdmin ? 'cursor-not-allowed opacity-90' : 'cursor-pointer hover:shadow-xs'}`}
-                          title="Permission to upload new documents"
-                        >
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>Add / Upload</span>
-                        </button>
-
-                        {/* Can Edit */}
-                        <button
-                          type="button"
-                          disabled={isPrimaryAdmin}
-                          onClick={() => handleTogglePermission(u.id, 'can_edit_documents')}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition border ${
-                            perms.can_edit_documents
-                              ? 'bg-amber-50 text-amber-800 border-amber-300'
-                              : 'bg-gray-50 text-gray-500 border-gray-200 opacity-60'
-                          } ${isPrimaryAdmin ? 'cursor-not-allowed opacity-90' : 'cursor-pointer hover:shadow-xs'}`}
-                          title="Permission to edit document metadata or reprocess"
-                        >
-                          <Edit className="w-3.5 h-3.5" />
+                          <button
+                            type="button"
+                            onClick={() => handleBulkColumnToggle('can_view_documents', true)}
+                            className="text-[10px] text-[#0d3d24] hover:text-[#d48b14] underline"
+                            title="Enable View for all selected"
+                          >
+                            All
+                          </button>
+                        </div>
+                      </th>
+                      <th className="py-3 px-2 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <span>Upload</span>
+                          <button
+                            type="button"
+                            onClick={() => handleBulkColumnToggle('can_add_documents', true)}
+                            className="text-[10px] text-[#0d3d24] hover:text-[#d48b14] underline"
+                            title="Enable Upload for all selected"
+                          >
+                            All
+                          </button>
+                        </div>
+                      </th>
+                      <th className="py-3 px-2 text-center">
+                        <div className="flex items-center justify-center gap-1">
                           <span>Edit</span>
-                        </button>
-
-                        {/* Can Delete */}
-                        <button
-                          type="button"
-                          disabled={isPrimaryAdmin}
-                          onClick={() => handleTogglePermission(u.id, 'can_delete_documents')}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition border ${
-                            perms.can_delete_documents
-                              ? 'bg-rose-50 text-rose-800 border-rose-300'
-                              : 'bg-gray-50 text-gray-500 border-gray-200 opacity-60'
-                          } ${isPrimaryAdmin ? 'cursor-not-allowed opacity-90' : 'cursor-pointer hover:shadow-xs'}`}
-                          title="Permission to delete documents from knowledge base"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <button
+                            type="button"
+                            onClick={() => handleBulkColumnToggle('can_edit_documents', true)}
+                            className="text-[10px] text-[#0d3d24] hover:text-[#d48b14] underline"
+                            title="Enable Edit for all selected"
+                          >
+                            All
+                          </button>
+                        </div>
+                      </th>
+                      <th className="py-3 px-2 text-center">
+                        <div className="flex items-center justify-center gap-1">
                           <span>Delete</span>
-                        </button>
-
-                        {/* Save Button */}
-                        {!isPrimaryAdmin && (
                           <button
                             type="button"
-                            disabled={savingId === u.id}
-                            onClick={() => handleSaveUserPermissions(u.id)}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#0d3d24] text-white text-xs font-semibold hover:bg-[#154d2e] disabled:opacity-50 transition shadow-xs ml-1"
-                            title="Save updated permissions for this user"
+                            onClick={() => handleBulkColumnToggle('can_delete_documents', true)}
+                            className="text-[10px] text-[#0d3d24] hover:text-[#d48b14] underline"
+                            title="Enable Delete for all selected"
                           >
-                            {savingId === u.id ? (
-                              <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Check className="w-3.5 h-3.5 text-[#f3a628]" />
-                            )}
-                            <span className="hidden sm:inline">Save</span>
+                            All
                           </button>
-                        )}
+                        </div>
+                      </th>
+                      <th className="py-3 px-3.5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#e8ded1]/70 bg-white">
+                    {filteredUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="py-8 text-center text-[#5e6660]">
+                          No users match your search query.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredUsers.map((u) => {
+                        const perms = userPerms[u.id] || {
+                          role: u.role,
+                          can_view_documents: u.can_view_documents,
+                          can_add_documents: u.can_add_documents,
+                          can_edit_documents: u.can_edit_documents,
+                          can_delete_documents: u.can_delete_documents,
+                        };
+                        const isPrimaryAdmin = u.id === 1;
+                        const isSelected = selectedIds.has(u.id);
 
-                        {/* Delete User Button */}
-                        {!isPrimaryAdmin && u.id !== currentUser?.id && (
-                          <button
-                            type="button"
-                            disabled={savingId === u.id}
-                            onClick={() => handleDeleteUser(u.id, u.name)}
-                            className="p-1.5 rounded-xl text-red-600 hover:bg-red-50 transition"
-                            title="Delete this user account"
+                        return (
+                          <tr
+                            key={u.id}
+                            className={`hover:bg-[#faf7f2]/60 transition ${
+                              isSelected ? 'bg-amber-50/40' : ''
+                            }`}
                           >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                            {/* Checkbox */}
+                            <td className="py-3 px-3.5 text-center">
+                              {!isPrimaryAdmin ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleSelectUser(u.id)}
+                                  className="cursor-pointer"
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare className="w-4 h-4 text-[#0d3d24]" />
+                                  ) : (
+                                    <Square className="w-4 h-4 text-[#8c948e]" />
+                                  )}
+                                </button>
+                              ) : (
+                                <span title="Primary Admin" className="inline-flex justify-center w-full">
+                                  <Shield className="w-4 h-4 text-[#d48b14] mx-auto opacity-70" />
+                                </span>
+                              )}
+                            </td>
+
+                            {/* User details */}
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-[#1e2420] text-xs sm:text-sm">
+                                {u.name}
+                              </div>
+                              <div className="text-[11px] text-[#5e6660]">
+                                {u.email}
+                              </div>
+                            </td>
+
+                            {/* Role Badge */}
+                            <td className="py-3 px-2 text-center">
+                              {isPrimaryAdmin ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#d48b14]/15 text-[#d48b14] border border-[#d48b14]/30">
+                                  Primary
+                                </span>
+                              ) : perms.role === 'admin' ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  Admin
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700">
+                                  User
+                                </span>
+                              )}
+                            </td>
+
+                            {/* View Toggle */}
+                            <td className="py-3 px-2 text-center">
+                              <input
+                                type="checkbox"
+                                disabled={isPrimaryAdmin}
+                                checked={perms.can_view_documents}
+                                onChange={() => handleTogglePermission(u.id, 'can_view_documents')}
+                                className="w-4 h-4 rounded text-[#0d3d24] focus:ring-0 cursor-pointer disabled:opacity-60"
+                              />
+                            </td>
+
+                            {/* Add Toggle */}
+                            <td className="py-3 px-2 text-center">
+                              <input
+                                type="checkbox"
+                                disabled={isPrimaryAdmin}
+                                checked={perms.can_add_documents}
+                                onChange={() => handleTogglePermission(u.id, 'can_add_documents')}
+                                className="w-4 h-4 rounded text-[#0d3d24] focus:ring-0 cursor-pointer disabled:opacity-60"
+                              />
+                            </td>
+
+                            {/* Edit Toggle */}
+                            <td className="py-3 px-2 text-center">
+                              <input
+                                type="checkbox"
+                                disabled={isPrimaryAdmin}
+                                checked={perms.can_edit_documents}
+                                onChange={() => handleTogglePermission(u.id, 'can_edit_documents')}
+                                className="w-4 h-4 rounded text-[#0d3d24] focus:ring-0 cursor-pointer disabled:opacity-60"
+                              />
+                            </td>
+
+                            {/* Delete Toggle */}
+                            <td className="py-3 px-2 text-center">
+                              <input
+                                type="checkbox"
+                                disabled={isPrimaryAdmin}
+                                checked={perms.can_delete_documents}
+                                onChange={() => handleTogglePermission(u.id, 'can_delete_documents')}
+                                className="w-4 h-4 rounded text-[#0d3d24] focus:ring-0 cursor-pointer disabled:opacity-60"
+                              />
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                              {!isPrimaryAdmin && (
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={savingId === u.id}
+                                    onClick={() => handleSaveUserPermissions(u.id)}
+                                    className="px-2.5 py-1 rounded-lg bg-[#0d3d24] text-white text-[11px] font-semibold hover:bg-[#154d2e] disabled:opacity-50 transition shadow-2xs flex items-center gap-1"
+                                    title="Save changes for this user"
+                                  >
+                                    {savingId === u.id ? (
+                                      <RotateCw className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <Check className="w-3 h-3 text-[#f3a628]" />
+                                    )}
+                                    <span>Save</span>
+                                  </button>
+
+                                  {u.id !== currentUser?.id && (
+                                    <button
+                                      type="button"
+                                      disabled={savingId === u.id}
+                                      onClick={() => handleDeleteUser(u.id, u.name)}
+                                      className="p-1 rounded-lg text-red-600 hover:bg-red-50 transition"
+                                      title="Delete user"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="px-6 py-3 bg-[#faf7f2] border-t border-[#e8ded1] flex items-center justify-between text-xs text-[#5e6660]">
+        {/* Modal Footer */}
+        <div className="px-6 py-3.5 bg-[#faf7f2] border-t border-[#e8ded1] flex items-center justify-between text-xs text-[#5e6660]">
           <span>
-            Changes to permissions take effect immediately across all active user sessions.
+            {selectedIds.size > 0
+              ? `${selectedIds.size} of ${nonPrimaryUsers.length} user(s) selected.`
+              : 'Select individual users or use Mark All to apply bulk permission changes.'}
           </span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-xl border border-[#e8ded1] bg-white font-medium hover:bg-[#f4efe6] transition"
+            className="px-4 py-2 rounded-xl bg-white border border-[#e8ded1] text-[#0d3d24] font-semibold hover:bg-[#f4efe6] transition shadow-2xs"
           >
-            Done
+            Close
           </button>
         </div>
       </div>
