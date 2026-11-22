@@ -39,6 +39,8 @@ class DocumentProcessingService
      */
     public function process(Document $document): Document
     {
+        @set_time_limit(300);
+
         $document->update([
             'processing_status' => 'processing',
             'processing_error' => null,
@@ -105,7 +107,7 @@ class DocumentProcessingService
                         Embedding::create([
                             'chunk_id' => $chunk->id,
                             'embedding' => $embeddings[$index],
-                            'embedding_model' => env('GEMINI_EMBEDDING_MODEL', 'text-embedding-004'),
+                            'embedding_model' => env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
                             'dimensions' => count($embeddings[$index]),
                         ]);
                     }

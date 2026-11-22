@@ -28,7 +28,7 @@ class EmbeddingService
     }
 
     /**
-     * Generate vector embedding for a single text chunk.
+     * Generate vector embedding for a single text chunk with rate limit backoff.
      *
      * @param string $text
      * @param string $taskType RETRIEVAL_DOCUMENT or RETRIEVAL_QUERY
@@ -38,46 +38,65 @@ class EmbeddingService
     public function generateEmbedding(string $text, string $taskType = 'RETRIEVAL_DOCUMENT'): array
     {
         if (empty($this->apiKey)) {
-            // If GEMINI_API_KEY is not set, log warning and generate deterministic normalized pseudo-embedding
-            // so local development or initial testing can function smoothly if needed
             Log::warning('GEMINI_API_KEY not configured. Generating deterministic fallback embedding.');
             return $this->generateFallbackEmbedding($text);
         }
 
-        try {
-            $url = "/v1beta/models/{$this->model}:embedContent?key={$this->apiKey}";
+        $maxRetries = 4;
+        $attempt = 0;
 
-            $response = $this->httpClient->post($url, [
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                ],
-                'json' => [
-                    'model' => "models/{$this->model}",
-                    'content' => [
-                        'parts' => [
-                            ['text' => $text],
-                        ],
+        while ($attempt < $maxRetries) {
+            $attempt++;
+            try {
+                $url = "/v1beta/models/{$this->model}:embedContent?key={$this->apiKey}";
+
+                $response = $this->httpClient->post($url, [
+                    'headers' => [
+                        'Content-Type' => 'application/json',
                     ],
-                    'taskType' => $taskType,
-                ],
-            ]);
+                    'json' => [
+                        'model' => "models/{$this->model}",
+                        'content' => [
+                            'parts' => [
+                                ['text' => $text],
+                            ],
+                        ],
+                        'taskType' => $taskType,
+                    ],
+                ]);
 
-            $data = json_decode($response->getBody()->getContents(), true);
+                $data = json_decode($response->getBody()->getContents(), true);
 
-            if (isset($data['embedding']['values'])) {
-                return $data['embedding']['values'];
+                if (isset($data['embedding']['values'])) {
+                    return $data['embedding']['values'];
+                }
+
+                throw new Exception("Malformed embedding response from Gemini API: " . json_encode($data));
+
+            } catch (Exception $e) {
+                $isRateLimit = $this->isRateLimitException($e);
+
+                if ($isRateLimit && $attempt < $maxRetries) {
+                    $delay = $this->extractRetryDelay($e, $attempt);
+                    Log::warning("Gemini single embedding rate limit encountered (429). Retrying in {$delay}s (attempt {$attempt}/{$maxRetries})...");
+                    sleep($delay);
+                    continue;
+                }
+
+                if ($attempt >= $maxRetries) {
+                    Log::error("Gemini Embedding API Error: " . $e->getMessage(), ['model' => $this->model]);
+                    throw new Exception("Failed to generate embedding with Gemini: " . $e->getMessage());
+                }
+
+                sleep($attempt * 2);
             }
-
-            throw new Exception("Malformed embedding response from Gemini API: " . json_encode($data));
-
-        } catch (Exception $e) {
-            Log::error("Gemini Embedding API Error: " . $e->getMessage(), ['model' => $this->model]);
-            throw new Exception("Failed to generate embedding with Gemini: " . $e->getMessage());
         }
+
+        throw new Exception("Failed to generate embedding with Gemini after {$maxRetries} attempts.");
     }
 
     /**
-     * Generate embeddings for multiple text chunks in batches.
+     * Generate embeddings for multiple text chunks in batches with rate limiting & backoff.
      *
      * @param array $texts Array of text strings
      * @param string $taskType
@@ -94,55 +113,116 @@ class EmbeddingService
             return array_map(fn($t) => $this->generateFallbackEmbedding($t), $texts);
         }
 
-        // Process in chunks of 50 to respect Gemini batch API limits
-        $batchSize = 50;
+        // Safe batch size of 15 to stay well below Gemini Free Tier 100 requests/minute quota
+        $batchSize = 15;
         $allEmbeddings = [];
         $chunks = array_chunk($texts, $batchSize);
 
-        foreach ($chunks as $chunk) {
-            try {
-                $requests = [];
-                foreach ($chunk as $text) {
-                    $requests[] = [
-                        'model' => "models/{$this->model}",
-                        'content' => [
-                            'parts' => [
-                                ['text' => $text],
-                            ],
-                        ],
-                        'taskType' => $taskType,
-                    ];
-                }
+        foreach ($chunks as $bIndex => $chunk) {
+            $maxRetries = 5;
+            $attempt = 0;
+            $batchSuccess = false;
 
-                $url = "/v1beta/models/{$this->model}:batchEmbedContents?key={$this->apiKey}";
-
-                $response = $this->httpClient->post($url, [
-                    'headers' => ['Content-Type' => 'application/json'],
-                    'json' => ['requests' => $requests],
-                ]);
-
-                $data = json_decode($response->getBody()->getContents(), true);
-
-                if (isset($data['embeddings'])) {
-                    foreach ($data['embeddings'] as $emb) {
-                        $allEmbeddings[] = $emb['values'] ?? [];
-                    }
-                } else {
-                    // Fallback to one-by-one if batch format differs
+            while (!$batchSuccess && $attempt < $maxRetries) {
+                $attempt++;
+                try {
+                    $requests = [];
                     foreach ($chunk as $text) {
-                        $allEmbeddings[] = $this->generateEmbedding($text, $taskType);
+                        $requests[] = [
+                            'model' => "models/{$this->model}",
+                            'content' => [
+                                'parts' => [
+                                    ['text' => $text],
+                                ],
+                            ],
+                            'taskType' => $taskType,
+                        ];
+                    }
+
+                    $url = "/v1beta/models/{$this->model}:batchEmbedContents?key={$this->apiKey}";
+
+                    $response = $this->httpClient->post($url, [
+                        'headers' => ['Content-Type' => 'application/json'],
+                        'json' => ['requests' => $requests],
+                    ]);
+
+                    $data = json_decode($response->getBody()->getContents(), true);
+
+                    if (isset($data['embeddings'])) {
+                        foreach ($data['embeddings'] as $emb) {
+                            $allEmbeddings[] = $emb['values'] ?? [];
+                        }
+                        $batchSuccess = true;
+                    } else {
+                        throw new Exception("Malformed batch embedding response: " . json_encode($data));
+                    }
+
+                } catch (Exception $e) {
+                    $isRateLimit = $this->isRateLimitException($e);
+
+                    if ($isRateLimit && $attempt < $maxRetries) {
+                        $delay = $this->extractRetryDelay($e, $attempt);
+                        Log::warning("Gemini batch embedding rate limit encountered (429). Retrying batch {$bIndex} in {$delay}s (attempt {$attempt}/{$maxRetries})...");
+                        sleep($delay);
+                    } else if ($attempt < $maxRetries) {
+                        $delay = $attempt * 3;
+                        Log::warning("Gemini batch embedding transient error: {$e->getMessage()}. Retrying in {$delay}s...");
+                        sleep($delay);
+                    } else {
+                        // After retries exhausted on batch API, fallback to individually paced calls
+                        Log::warning("Batch embedding API failed after {$maxRetries} attempts, falling back to paced individual calls: " . $e->getMessage());
+                        foreach ($chunk as $text) {
+                            $allEmbeddings[] = $this->generateEmbedding($text, $taskType);
+                            usleep(400000); // 400ms pause between fallback calls
+                        }
+                        $batchSuccess = true;
                     }
                 }
+            }
 
-            } catch (Exception $e) {
-                Log::warning("Batch embedding API failed, falling back to individual calls: " . $e->getMessage());
-                foreach ($chunk as $text) {
-                    $allEmbeddings[] = $this->generateEmbedding($text, $taskType);
+            // Polite delay between batches to avoid rate limit spikes
+            usleep(1200000);
+        }
+
+        return $allEmbeddings;
+    }
+
+    /**
+     * Check if exception is due to rate limits or quota exhaustion.
+     */
+    protected function isRateLimitException(Exception $e): bool
+    {
+        $msg = strtolower($e->getMessage());
+        return str_contains($msg, '429') 
+            || str_contains($msg, 'too many requests') 
+            || str_contains($msg, 'resource_exhausted') 
+            || str_contains($msg, 'quota');
+    }
+
+    /**
+     * Extract retry delay suggested by Gemini API or calculate exponential backoff.
+     */
+    protected function extractRetryDelay(Exception $e, int $attempt): int
+    {
+        $body = $e->getMessage();
+        if ($e instanceof \GuzzleHttp\Exception\ClientException && $e->hasResponse()) {
+            $body = (string)$e->getResponse()->getBody();
+            $json = json_decode($body, true);
+            if (isset($json['error']['details'])) {
+                foreach ($json['error']['details'] as $detail) {
+                    if (isset($detail['retryDelay'])) {
+                        $seconds = (float)rtrim($detail['retryDelay'], 's');
+                        return (int)ceil($seconds) + 1;
+                    }
                 }
             }
         }
 
-        return $allEmbeddings;
+        if (preg_match('/retry in ([\d\.]+)s/i', $body, $matches)) {
+            return (int)ceil((float)$matches[1]) + 1;
+        }
+
+        return min(30, ($attempt * 7) + 6);
     }
 
     /**

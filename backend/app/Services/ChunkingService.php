@@ -7,19 +7,19 @@ class ChunkingService
     /**
      * Target chunk size in characters (approx 500-600 tokens, assuming ~4 chars per token).
      */
-    protected int $targetChunkSize = 2000;
+    protected int $targetChunkSize = 2400;
 
     /**
      * Overlap size in characters (approx 75-100 tokens).
      */
-    protected int $overlapSize = 350;
+    protected int $overlapSize = 300;
 
     /**
      * Minimum chunk size to avoid tiny trailing fragments.
      */
     protected int $minChunkSize = 200;
 
-    public function __construct(int $targetChunkSize = 2000, int $overlapSize = 350)
+    public function __construct(int $targetChunkSize = 2400, int $overlapSize = 300)
     {
         $this->targetChunkSize = $targetChunkSize;
         $this->overlapSize = $overlapSize;
@@ -39,9 +39,14 @@ class ChunkingService
             return [];
         }
 
+        // If the document is structured records (e.g. Excel/CSV hotels, resorts, sites)
+        if (str_contains($text, '--- Record ')) {
+            return $this->chunkRecords($text, $baseMetadata);
+        }
+
         // Split text into semantic blocks:
-        // Priority 1: Double line breaks (paragraphs) or record boundaries (--- Record / --- Page / === Sheet)
-        $blocks = preg_split('/(\n\s*\n|(?=--- (?:Page|Record)\s+\d+ ---)|(?==== Sheet: ))/', $text);
+        // Priority 1: Double line breaks (paragraphs) or page boundaries (--- Page \d+ ---)
+        $blocks = preg_split('/(\n\s*\n|(?=--- Page\s+\d+ ---))/', $text);
         $blocks = array_filter(array_map('trim', $blocks), fn($b) => !empty($b));
 
         $chunks = [];
@@ -50,12 +55,9 @@ class ChunkingService
         $chunkIndex = 0;
 
         foreach ($blocks as $block) {
-            // Track page or sheet markers if present in this block
+            // Track page markers if present in this block
             if (preg_match('/--- Page (\d+) ---/', $block, $pageMatch)) {
                 $currentMetadata['page'] = (int)$pageMatch[1];
-            }
-            if (preg_match('/=== Sheet: ([^=\n]+) ===/', $block, $sheetMatch)) {
-                $currentMetadata['sheet'] = trim($sheetMatch[1]);
             }
 
             // If a single block is longer than the target size, split by sentences
@@ -94,6 +96,39 @@ class ChunkingService
         }
 
         // Flush remaining buffer
+        if (!empty(trim($currentChunk))) {
+            $chunks[] = $this->formatChunk($currentChunk, $chunkIndex++, $currentMetadata);
+        }
+
+        return $chunks;
+    }
+
+    /**
+     * Chunk structured records (e.g., Excel/CSV rows) keeping whole records intact.
+     */
+    protected function chunkRecords(string $text, array $baseMetadata): array
+    {
+        $blocks = preg_split('/(?=(?:--- Record \d+ ---|=== Sheet: ))/', $text);
+        $blocks = array_filter(array_map('trim', $blocks), fn($b) => !empty($b));
+
+        $chunks = [];
+        $currentChunk = '';
+        $currentMetadata = $baseMetadata;
+        $chunkIndex = 0;
+
+        foreach ($blocks as $block) {
+            if (preg_match('/=== Sheet: ([^=\n]+) ===/', $block, $sheetMatch)) {
+                $currentMetadata['sheet'] = trim($sheetMatch[1]);
+            }
+
+            if (mb_strlen($currentChunk) + mb_strlen($block) + 2 > $this->targetChunkSize && !empty(trim($currentChunk))) {
+                $chunks[] = $this->formatChunk($currentChunk, $chunkIndex++, $currentMetadata);
+                $currentChunk = $block;
+            } else {
+                $currentChunk = empty($currentChunk) ? $block : $currentChunk . "\n\n" . $block;
+            }
+        }
+
         if (!empty(trim($currentChunk))) {
             $chunks[] = $this->formatChunk($currentChunk, $chunkIndex++, $currentMetadata);
         }
