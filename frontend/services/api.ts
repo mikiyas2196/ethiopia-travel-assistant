@@ -299,9 +299,16 @@ export const api = {
     };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
+      formData.append('token', token);
     }
 
-    const response = await fetch(`${API_BASE_URL}/documents`, {
+    const currentUser = this.getCurrentUser();
+    if (currentUser?.email) {
+      formData.append('user_email', currentUser.email);
+    }
+
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const response = await fetch(`${API_BASE_URL}/documents${qs}`, {
       method: 'POST',
       headers,
       body: formData,
@@ -336,9 +343,16 @@ export const api = {
     };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
+      formData.append('token', token);
     }
 
-    const response = await fetch(`${API_BASE_URL}/documents/${id}`, {
+    const currentUser = this.getCurrentUser();
+    if (currentUser?.email) {
+      formData.append('user_email', currentUser.email);
+    }
+
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const response = await fetch(`${API_BASE_URL}/documents/${id}${qs}`, {
       method: 'POST', // using POST to handle multipart with Laravel
       headers,
       body: formData,

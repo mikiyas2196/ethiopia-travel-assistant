@@ -71,9 +71,7 @@ class AuthController extends Controller
             ]);
         }
 
-        // Revoke previous tokens for clean single session
-        $user->tokens()->delete();
-
+        // Create personal access token (preserve existing sessions so multiple tabs/tests remain valid)
         $token = $user->createToken('auth-token')->plainTextToken;
 
         return response()->json([
