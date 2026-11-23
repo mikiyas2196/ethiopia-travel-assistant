@@ -5,9 +5,10 @@ namespace App\Services;
 class ChunkingService
 {
     /**
-     * Target chunk size in characters (approx 500-600 tokens, assuming ~4 chars per token).
+     * Target chunk size in characters (approx 700-800 tokens, assuming ~4 chars per token).
+     * Larger chunks reduce total chunk count for large documents, lowering API call volume.
      */
-    protected int $targetChunkSize = 2400;
+    protected int $targetChunkSize = 3200;
 
     /**
      * Overlap size in characters (approx 75-100 tokens).
@@ -19,7 +20,7 @@ class ChunkingService
      */
     protected int $minChunkSize = 200;
 
-    public function __construct(int $targetChunkSize = 2400, int $overlapSize = 300)
+    public function __construct(int $targetChunkSize = 3200, int $overlapSize = 300)
     {
         $this->targetChunkSize = $targetChunkSize;
         $this->overlapSize = $overlapSize;

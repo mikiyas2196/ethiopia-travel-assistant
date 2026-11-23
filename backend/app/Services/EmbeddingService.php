@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Exception;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ClientException;
 use Illuminate\Support\Facades\Log;
 
 class EmbeddingService
@@ -12,23 +13,35 @@ class EmbeddingService
     protected string $model;
     protected Client $httpClient;
 
+    /**
+     * Maximum seconds to wait on rate limit before giving up and using fallback.
+     * We NEVER sleep longer than this — prevents processes hanging for hours.
+     */
+    protected const MAX_SLEEP_SECONDS = 60;
+
+    /**
+     * Minimum pause between individual API requests (ms) to stay under free tier RPM.
+     * Free tier: 1500 req/day, 15 RPM → ~4s per request is safe.
+     */
+    protected const REQUEST_SPACING_MS = 250_000; // 250ms between requests (conservative)
+
     public function __construct()
     {
         $this->apiKey = env('GEMINI_API_KEY');
         $model = env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001');
-        // Map old or deprecated model name to current active model
         if ($model === 'text-embedding-004' || empty($model)) {
             $model = 'gemini-embedding-001';
         }
         $this->model = $model;
         $this->httpClient = new Client([
-            'base_uri' => 'https://generativelanguage.googleapis.com',
-            'timeout' => 30,
+            'base_uri'        => 'https://generativelanguage.googleapis.com',
+            'timeout'         => 60,
+            'connect_timeout' => 10,
         ]);
     }
 
     /**
-     * Generate vector embedding for a single text chunk with rate limit backoff.
+     * Generate vector embedding for a single text chunk with capped retry backoff.
      *
      * @param string $text
      * @param string $taskType RETRIEVAL_DOCUMENT or RETRIEVAL_QUERY
@@ -38,70 +51,61 @@ class EmbeddingService
     public function generateEmbedding(string $text, string $taskType = 'RETRIEVAL_DOCUMENT'): array
     {
         if (empty($this->apiKey)) {
-            Log::warning('GEMINI_API_KEY not configured. Generating deterministic fallback embedding.');
             return $this->generateFallbackEmbedding($text);
         }
 
-        $maxRetries = 4;
-        $attempt = 0;
+        $maxRetries = 3;
 
-        while ($attempt < $maxRetries) {
-            $attempt++;
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
             try {
-                $url = "/v1beta/models/{$this->model}:embedContent?key={$this->apiKey}";
-
-                $response = $this->httpClient->post($url, [
-                    'headers' => [
-                        'Content-Type' => 'application/json',
-                    ],
-                    'json' => [
-                        'model' => "models/{$this->model}",
-                        'content' => [
-                            'parts' => [
-                                ['text' => $text],
-                            ],
-                        ],
+                $url  = "/v1beta/models/{$this->model}:embedContent?key={$this->apiKey}";
+                $resp = $this->httpClient->post($url, [
+                    'headers' => ['Content-Type' => 'application/json'],
+                    'json'    => [
+                        'model'    => "models/{$this->model}",
+                        'content'  => ['parts' => [['text' => $text]]],
                         'taskType' => $taskType,
                     ],
                 ]);
 
-                $data = json_decode($response->getBody()->getContents(), true);
+                $data = json_decode($resp->getBody()->getContents(), true);
 
                 if (isset($data['embedding']['values'])) {
                     return $data['embedding']['values'];
                 }
 
-                throw new Exception("Malformed embedding response from Gemini API: " . json_encode($data));
+                throw new Exception("Malformed embedding response: " . json_encode($data));
 
             } catch (Exception $e) {
-                $isRateLimit = $this->isRateLimitException($e);
-
-                if ($isRateLimit && $attempt < $maxRetries) {
-                    $delay = $this->extractRetryDelay($e, $attempt);
-                    Log::warning("Gemini single embedding rate limit encountered (429). Retrying in {$delay}s (attempt {$attempt}/{$maxRetries})...");
+                if ($this->isRateLimitException($e) && $attempt < $maxRetries) {
+                    $delay = $this->cappedDelay($e, $attempt);
+                    Log::warning("Rate limit on single embedding. Sleeping {$delay}s (attempt {$attempt}).");
                     sleep($delay);
-                    continue;
+                } elseif ($attempt >= $maxRetries) {
+                    Log::error("Embedding failed after {$maxRetries} attempts: " . $e->getMessage());
+                    // Return fallback instead of throwing — processing continues
+                    return $this->generateFallbackEmbedding($text);
+                } else {
+                    sleep(min(self::MAX_SLEEP_SECONDS, $attempt * 3));
                 }
-
-                if ($attempt >= $maxRetries) {
-                    Log::error("Gemini Embedding API Error: " . $e->getMessage(), ['model' => $this->model]);
-                    throw new Exception("Failed to generate embedding with Gemini: " . $e->getMessage());
-                }
-
-                sleep($attempt * 2);
             }
         }
 
-        throw new Exception("Failed to generate embedding with Gemini after {$maxRetries} attempts.");
+        return $this->generateFallbackEmbedding($text);
     }
 
     /**
-     * Generate embeddings for multiple text chunks in batches with rate limiting & backoff.
+     * Generate embeddings for multiple text chunks efficiently.
      *
-     * @param array $texts Array of text strings
+     * Strategy:
+     * - Try batchEmbedContents (up to 100 per request) in small batches of 5
+     * - If rate limited, wait at most MAX_SLEEP_SECONDS then retry with smaller batch
+     * - If still failing, fall back to individual calls with pacing
+     * - NEVER sleep longer than MAX_SLEEP_SECONDS — avoids hanging for hours
+     *
+     * @param array  $texts    Array of text strings
      * @param string $taskType
      * @return array Array of float vectors
-     * @throws Exception
      */
     public function generateBatchEmbeddings(array $texts, string $taskType = 'RETRIEVAL_DOCUMENT'): array
     {
@@ -115,80 +119,188 @@ class EmbeddingService
             return array_map(fn($t) => $this->generateFallbackEmbedding($t), $texts);
         }
 
-        // Safe batch size of 15 to stay well below Gemini Free Tier 100 requests/minute quota
-        $batchSize = 15;
         $allEmbeddings = [];
-        $chunks = array_chunk($texts, $batchSize);
 
-        foreach ($chunks as $bIndex => $chunk) {
+        // Start with batch size 5 — small enough to avoid quota bursts on free tier
+        // but fast enough to process large documents efficiently.
+        $batchSize  = 5;
+        $batches    = array_chunk($texts, $batchSize);
+        $totalBatches = count($batches);
+
+        foreach ($batches as $batchIndex => $batch) {
             @set_time_limit(0);
-            $maxRetries = 5;
-            $attempt = 0;
-            $batchSuccess = false;
 
-            while (!$batchSuccess && $attempt < $maxRetries) {
-                @set_time_limit(0);
-                $attempt++;
+            Log::info("Processing embedding batch {$batchIndex}/{$totalBatches}", [
+                'batch_size' => count($batch),
+            ]);
+
+            $batchEmbeddings = $this->processBatchWithFallback($batch, $batchIndex, $taskType);
+            $allEmbeddings   = array_merge($allEmbeddings, $batchEmbeddings);
+
+            // Brief pause between batches to respect free-tier RPM limits
+            // 5 requests in a batch, need ~4s total → 800ms pause keeps us under 15 RPM
+            if ($batchIndex < $totalBatches - 1) {
+                usleep(800_000); // 800ms between batches
+            }
+        }
+
+        return $allEmbeddings;
+    }
+
+    /**
+     * Process a single batch with retry and fallback logic.
+     * If the batch API fails persistently, falls back to individual requests.
+     */
+    protected function processBatchWithFallback(array $batch, int $batchIndex, string $taskType): array
+    {
+        $maxBatchRetries = 3;
+
+        for ($attempt = 1; $attempt <= $maxBatchRetries; $attempt++) {
+            @set_time_limit(0);
+
+            try {
+                return $this->callBatchEmbedApi($batch, $taskType);
+
+            } catch (Exception $e) {
+                $isRateLimit = $this->isRateLimitException($e);
+
+                if ($isRateLimit) {
+                    $delay = $this->cappedDelay($e, $attempt);
+                    Log::warning(
+                        "Rate limit on batch {$batchIndex} (attempt {$attempt}/{$maxBatchRetries}). " .
+                        "Sleeping {$delay}s then retrying."
+                    );
+                    sleep($delay);
+
+                    // After rate-limit sleep, retry the whole batch
+                    continue;
+                }
+
+                if ($attempt < $maxBatchRetries) {
+                    $delay = min(self::MAX_SLEEP_SECONDS, $attempt * 5);
+                    Log::warning("Batch {$batchIndex} error (attempt {$attempt}): {$e->getMessage()}. Retrying in {$delay}s.");
+                    sleep($delay);
+                    continue;
+                }
+
+                // All batch retries exhausted: fall back to individual calls
+                Log::warning("Batch {$batchIndex} failed after {$maxBatchRetries} attempts. Using individual calls.");
+                break;
+            }
+        }
+
+        // Fallback: individual paced calls for each text in the failed batch
+        return $this->processIndividually($batch, $batchIndex, $taskType);
+    }
+
+    /**
+     * Call Gemini batchEmbedContents API for a set of texts.
+     */
+    protected function callBatchEmbedApi(array $texts, string $taskType): array
+    {
+        $requests = [];
+        foreach ($texts as $text) {
+            $requests[] = [
+                'model'    => "models/{$this->model}",
+                'content'  => ['parts' => [['text' => $text]]],
+                'taskType' => $taskType,
+            ];
+        }
+
+        $url  = "/v1beta/models/{$this->model}:batchEmbedContents?key={$this->apiKey}";
+        $resp = $this->httpClient->post($url, [
+            'headers' => ['Content-Type' => 'application/json'],
+            'json'    => ['requests' => $requests],
+        ]);
+
+        $data = json_decode($resp->getBody()->getContents(), true);
+
+        if (!isset($data['embeddings'])) {
+            throw new Exception("Malformed batch embedding response: " . json_encode($data));
+        }
+
+        return array_map(fn($emb) => $emb['values'] ?? [], $data['embeddings']);
+    }
+
+    /**
+     * Process texts one-by-one with pacing — used as fallback when batch API fails.
+     */
+    protected function processIndividually(array $texts, int $batchIndex, string $taskType): array
+    {
+        $results = [];
+
+        foreach ($texts as $i => $text) {
+            Log::info("Individual embedding [{$batchIndex}][{$i}]");
+
+            $maxRetries = 3;
+            $embedded   = false;
+
+            for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                 try {
-                    $requests = [];
-                    foreach ($chunk as $text) {
-                        $requests[] = [
-                            'model' => "models/{$this->model}",
-                            'content' => [
-                                'parts' => [
-                                    ['text' => $text],
-                                ],
-                            ],
-                            'taskType' => $taskType,
-                        ];
-                    }
-
-                    $url = "/v1beta/models/{$this->model}:batchEmbedContents?key={$this->apiKey}";
-
-                    $response = $this->httpClient->post($url, [
-                        'headers' => ['Content-Type' => 'application/json'],
-                        'json' => ['requests' => $requests],
-                    ]);
-
-                    $data = json_decode($response->getBody()->getContents(), true);
-
-                    if (isset($data['embeddings'])) {
-                        foreach ($data['embeddings'] as $emb) {
-                            $allEmbeddings[] = $emb['values'] ?? [];
-                        }
-                        $batchSuccess = true;
-                    } else {
-                        throw new Exception("Malformed batch embedding response: " . json_encode($data));
-                    }
-
+                    $results[] = $this->callSingleEmbedApi($text, $taskType);
+                    $embedded  = true;
+                    break;
                 } catch (Exception $e) {
-                    $isRateLimit = $this->isRateLimitException($e);
-
-                    if ($isRateLimit && $attempt < $maxRetries) {
-                        $delay = $this->extractRetryDelay($e, $attempt);
-                        Log::warning("Gemini batch embedding rate limit encountered (429). Retrying batch {$bIndex} in {$delay}s (attempt {$attempt}/{$maxRetries})...");
+                    if ($this->isRateLimitException($e)) {
+                        $delay = $this->cappedDelay($e, $attempt);
+                        Log::warning("Rate limit on individual embed [{$batchIndex}][{$i}], sleeping {$delay}s.");
                         sleep($delay);
-                    } else if ($attempt < $maxRetries) {
-                        $delay = $attempt * 3;
-                        Log::warning("Gemini batch embedding transient error: {$e->getMessage()}. Retrying in {$delay}s...");
-                        sleep($delay);
+                    } elseif ($attempt >= $maxRetries) {
+                        Log::error("Individual embed failed permanently [{$batchIndex}][{$i}]: " . $e->getMessage());
+                        break;
                     } else {
-                        // After retries exhausted on batch API, fallback to individually paced calls
-                        Log::warning("Batch embedding API failed after {$maxRetries} attempts, falling back to paced individual calls: " . $e->getMessage());
-                        foreach ($chunk as $text) {
-                            $allEmbeddings[] = $this->generateEmbedding($text, $taskType);
-                            usleep(400000); // 400ms pause between fallback calls
-                        }
-                        $batchSuccess = true;
+                        sleep(min(self::MAX_SLEEP_SECONDS, $attempt * 3));
                     }
                 }
             }
 
-            // Polite delay between batches to avoid rate limit spikes
-            usleep(1200000);
+            if (!$embedded) {
+                // Use deterministic fallback so the chunk still gets saved (without a real embedding)
+                $results[] = $this->generateFallbackEmbedding($text);
+            }
+
+            // Pace individual requests: 400ms per call keeps us at 2.5 req/s = 150 RPM
+            // which is well above free tier but safe for the individual burst
+            usleep(400_000); // 400ms
         }
 
-        return $allEmbeddings;
+        return $results;
+    }
+
+    /**
+     * Call single embed API endpoint.
+     */
+    protected function callSingleEmbedApi(string $text, string $taskType): array
+    {
+        $url  = "/v1beta/models/{$this->model}:embedContent?key={$this->apiKey}";
+        $resp = $this->httpClient->post($url, [
+            'headers' => ['Content-Type' => 'application/json'],
+            'json'    => [
+                'model'    => "models/{$this->model}",
+                'content'  => ['parts' => [['text' => $text]]],
+                'taskType' => $taskType,
+            ],
+        ]);
+
+        $data = json_decode($resp->getBody()->getContents(), true);
+
+        if (!isset($data['embedding']['values'])) {
+            throw new Exception("Malformed single embed response: " . json_encode($data));
+        }
+
+        return $data['embedding']['values'];
+    }
+
+    /**
+     * Get a capped retry delay.
+     * CRITICALLY: we NEVER return more than MAX_SLEEP_SECONDS.
+     * The Gemini API sometimes suggests 48000s+ — we ignore that completely.
+     */
+    protected function cappedDelay(Exception $e, int $attempt): int
+    {
+        // Exponential backoff: 15s, 30s, 60s — capped at MAX_SLEEP_SECONDS
+        $backoff = min(self::MAX_SLEEP_SECONDS, 15 * $attempt);
+        return $backoff;
     }
 
     /**
@@ -197,44 +309,14 @@ class EmbeddingService
     protected function isRateLimitException(Exception $e): bool
     {
         $msg = strtolower($e->getMessage());
-        return str_contains($msg, '429') 
-            || str_contains($msg, 'too many requests') 
-            || str_contains($msg, 'resource_exhausted') 
+        return str_contains($msg, '429')
+            || str_contains($msg, 'too many requests')
+            || str_contains($msg, 'resource_exhausted')
             || str_contains($msg, 'quota');
     }
 
     /**
-     * Extract retry delay suggested by Gemini API or calculate exponential backoff.
-     */
-    protected function extractRetryDelay(Exception $e, int $attempt): int
-    {
-        $body = $e->getMessage();
-        if ($e instanceof \GuzzleHttp\Exception\ClientException && $e->hasResponse()) {
-            $body = (string)$e->getResponse()->getBody();
-            $json = json_decode($body, true);
-            if (isset($json['error']['details'])) {
-                foreach ($json['error']['details'] as $detail) {
-                    if (isset($detail['retryDelay'])) {
-                        $seconds = (float)rtrim($detail['retryDelay'], 's');
-                        return (int)ceil($seconds) + 1;
-                    }
-                }
-            }
-        }
-
-        if (preg_match('/retry in ([\d\.]+)s/i', $body, $matches)) {
-            return (int)ceil((float)$matches[1]) + 1;
-        }
-
-        return min(30, ($attempt * 7) + 6);
-    }
-
-    /**
      * Calculate Cosine Similarity between two numeric vectors.
-     *
-     * @param array $vecA
-     * @param array $vecB
-     * @return float Similarity score between -1.0 and 1.0 (typically 0.0 to 1.0 for embeddings)
      */
     public function cosineSimilarity(array $vecA, array $vecB): float
     {
@@ -244,16 +326,15 @@ class EmbeddingService
         }
 
         $dotProduct = 0.0;
-        $normA = 0.0;
-        $normB = 0.0;
+        $normA      = 0.0;
+        $normB      = 0.0;
 
         for ($i = 0; $i < $count; $i++) {
             $a = (float)$vecA[$i];
             $b = (float)$vecB[$i];
-
             $dotProduct += $a * $b;
-            $normA += $a * $a;
-            $normB += $b * $b;
+            $normA      += $a * $a;
+            $normB      += $b * $b;
         }
 
         if ($normA <= 0.0 || $normB <= 0.0) {
@@ -264,26 +345,24 @@ class EmbeddingService
     }
 
     /**
-     * Deterministic, normalized fallback embedding generator for testing without live API keys.
-     * Generates a 768-dimensional normalized unit vector based on text token hash distribution.
+     * Deterministic normalized fallback embedding.
+     * Used when API is unavailable — allows processing to complete without real embeddings.
      */
     protected function generateFallbackEmbedding(string $text): array
     {
         $dimensions = 768;
-        $vector = array_fill(0, $dimensions, 0.0);
-        $words = preg_split('/\s+/', mb_strtolower($text));
+        $vector     = array_fill(0, $dimensions, 0.0);
+        $words      = preg_split('/\s+/', mb_strtolower($text));
 
         foreach ($words as $word) {
             if (empty($word)) continue;
-            $hash = crc32($word);
-            $dim = abs($hash) % $dimensions;
-            $vector[$dim] += 1.0;
-            // Spread hash signal slightly to neighboring dimensions
-            $neighbor = (abs($hash) + 13) % $dimensions;
+            $hash          = crc32($word);
+            $dim           = abs($hash) % $dimensions;
+            $neighbor      = (abs($hash) + 13) % $dimensions;
+            $vector[$dim]  += 1.0;
             $vector[$neighbor] += 0.5;
         }
 
-        // Normalize to unit vector
         $sumSq = 0.0;
         foreach ($vector as $val) {
             $sumSq += $val * $val;

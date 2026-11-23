@@ -185,9 +185,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   >
                     {currentUser.name}
                   </span>
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-[#165b36] text-[#f3a628] border border-[#d48b14]/40 shrink-0">
-                    {isAdmin ? 'Admin' : 'Staff'}
-                  </span>
+                  {isAdmin && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-[#165b36] text-[#f3a628] border border-[#d48b14]/40 shrink-0">
+                      Admin
+                    </span>
+                  )}
                   <ChevronDown
                     className={`w-3.5 h-3.5 text-[#cfc5b0] transition-transform duration-200 shrink-0 ${
                       isProfileOpen ? 'rotate-180 text-[#f3a628]' : ''
@@ -211,7 +213,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                           {currentUser.email}
                         </p>
                         <span className="inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-[#165b36] text-[#f3a628] border border-[#d48b14]/30">
-                          {isAdmin ? 'System Administrator' : 'Staff Account'}
+                          {isAdmin ? 'System Administrator' : 'User Account'}
                         </span>
                       </div>
                     </div>

@@ -17,21 +17,30 @@ class DocumentProcessingService
     protected ChunkingService $chunker;
     protected EmbeddingService $embedder;
 
+    /**
+     * How many chunks to embed and persist in each streaming batch.
+     * Small batch = fewer API calls per request = less likely to hit rate limits.
+     */
+    protected int $streamBatchSize = 5;
+
     public function __construct(
         PdfExtractionService $pdfExtractor,
         ExcelExtractionService $excelExtractor,
         ChunkingService $chunker,
         EmbeddingService $embedder
     ) {
-        $this->pdfExtractor = $pdfExtractor;
+        $this->pdfExtractor  = $pdfExtractor;
         $this->excelExtractor = $excelExtractor;
-        $this->chunker = $chunker;
-        $this->embedder = $embedder;
+        $this->chunker       = $chunker;
+        $this->embedder      = $embedder;
     }
 
     /**
-     * Process or reprocess a document completely:
-     * extract text -> chunk -> generate embeddings -> persist.
+     * Process or reprocess a document:
+     * extract text -> chunk -> generate embeddings in streaming batches -> persist.
+     *
+     * Supports RESUME: if the document already has some chunks saved (from a
+     * previous partial run), skips those and only embeds the remaining ones.
      *
      * @param Document $document
      * @return Document
@@ -41,10 +50,11 @@ class DocumentProcessingService
     {
         @set_time_limit(0);
         @ini_set('memory_limit', '1024M');
+        @ini_set('max_execution_time', '0');
 
         $document->update([
             'processing_status' => 'processing',
-            'processing_error' => null,
+            'processing_error'  => null,
         ]);
 
         try {
@@ -56,74 +66,141 @@ class DocumentProcessingService
             }
 
             // 2. Extract content based on file type
+            Log::info("Extracting text from document", [
+                'document_id' => $document->id,
+                'file_type'   => $document->file_type,
+                'file_size'   => $document->file_size,
+            ]);
+
             $extractedText = match (strtolower($document->file_type)) {
-                'pdf' => $this->pdfExtractor->extractText($absolutePath),
+                'pdf'                => $this->pdfExtractor->extractText($absolutePath),
                 'xlsx', 'xls', 'csv' => $this->excelExtractor->extractText($absolutePath, $document->file_type),
-                default => throw new Exception("Unsupported file type: {$document->file_type}"),
+                default              => throw new Exception("Unsupported file type: {$document->file_type}"),
             };
 
             if (empty(trim($extractedText))) {
                 throw new Exception("Extracted document content is empty.");
             }
 
-            // 3. Clean up existing chunks and embeddings if this is a reprocess
-            $document->chunks()->delete();
-
-            // 4. Divide extracted content into chunks
+            // 3. Build all chunk definitions
             $baseMetadata = [
                 'document_id' => $document->id,
-                'title' => $document->title,
-                'category' => $document->category,
+                'title'       => $document->title,
+                'category'    => $document->category,
                 'source_name' => $document->source_name,
-                'file_type' => $document->file_type,
+                'file_type'   => $document->file_type,
             ];
 
+            Log::info("Chunking document text", ['document_id' => $document->id]);
             $chunkDefinitions = $this->chunker->chunk($extractedText, $baseMetadata);
 
             if (empty($chunkDefinitions)) {
                 throw new Exception("Failed to produce text chunks from extracted content.");
             }
 
-            // 5. Generate embeddings for chunks
-            $chunkTexts = array_column($chunkDefinitions, 'content');
-            $embeddings = $this->embedder->generateBatchEmbeddings($chunkTexts, 'RETRIEVAL_DOCUMENT');
+            $totalChunks = count($chunkDefinitions);
+            Log::info("Document chunked", [
+                'document_id'  => $document->id,
+                'total_chunks' => $totalChunks,
+            ]);
 
-            // 6. Persist chunks and embeddings inside a database transaction
-            DB::transaction(function () use ($document, $extractedText, $chunkDefinitions, $embeddings) {
-                $document->update([
-                    'extracted_content' => $extractedText,
-                    'chunk_count' => count($chunkDefinitions),
+            // 4. Save extracted content and chunk count immediately
+            $document->update([
+                'extracted_content' => $extractedText,
+                'chunk_count'       => $totalChunks,
+            ]);
+
+            // 5. Find out which chunk_indexes are already saved (resume support)
+            $existingIndexes = DB::table('document_chunks')
+                ->where('document_id', $document->id)
+                ->pluck('chunk_index')
+                ->flip()
+                ->toArray(); // O(1) lookup
+
+            $pendingChunks = array_filter(
+                $chunkDefinitions,
+                fn($c) => !isset($existingIndexes[$c['chunk_index']])
+            );
+            $pendingChunks = array_values($pendingChunks);
+
+            $alreadyDone = $totalChunks - count($pendingChunks);
+            if ($alreadyDone > 0) {
+                Log::info("Resuming from checkpoint: {$alreadyDone}/{$totalChunks} chunks already embedded.");
+            }
+
+            if (empty($pendingChunks)) {
+                // All chunks already embedded — just mark complete
+                $document->update(['processing_status' => 'completed', 'processing_error' => null]);
+                Log::info("Document already fully processed — marked complete.", ['document_id' => $document->id]);
+                return $document->fresh();
+            }
+
+            // 6. Stream: embed and persist pending chunks in small batches
+            $chunkBatches  = array_chunk($pendingChunks, $this->streamBatchSize);
+            $totalBatches  = count($chunkBatches);
+            $processedCount = $alreadyDone;
+
+            foreach ($chunkBatches as $batchIndex => $batch) {
+                @set_time_limit(0);
+
+                $batchTexts = array_column($batch, 'content');
+
+                Log::info("Embedding batch", [
+                    'document_id'    => $document->id,
+                    'batch'          => $batchIndex + 1,
+                    'total_batches'  => $totalBatches,
+                    'chunks_in_batch' => count($batch),
+                    'progress'       => "{$processedCount}/{$totalChunks}",
                 ]);
 
-                foreach ($chunkDefinitions as $index => $cDef) {
-                    $chunk = DocumentChunk::create([
-                        'document_id' => $document->id,
-                        'chunk_index' => $cDef['chunk_index'],
-                        'content' => $cDef['content'],
-                        'metadata' => $cDef['metadata'],
-                        'token_count' => $cDef['token_count'],
-                    ]);
+                // Generate embeddings (never sleeps more than 60s)
+                $embeddings = $this->embedder->generateBatchEmbeddings($batchTexts, 'RETRIEVAL_DOCUMENT');
 
-                    if (isset($embeddings[$index]) && !empty($embeddings[$index])) {
-                        Embedding::create([
-                            'chunk_id' => $chunk->id,
-                            'embedding' => $embeddings[$index],
-                            'embedding_model' => env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
-                            'dimensions' => count($embeddings[$index]),
+                // Persist this batch
+                DB::transaction(function () use ($document, $batch, $embeddings) {
+                    foreach ($batch as $i => $cDef) {
+                        $chunk = DocumentChunk::create([
+                            'document_id' => $document->id,
+                            'chunk_index' => $cDef['chunk_index'],
+                            'content'     => $cDef['content'],
+                            'metadata'    => $cDef['metadata'],
+                            'token_count' => $cDef['token_count'],
                         ]);
-                    }
-                }
 
-                $document->update([
-                    'processing_status' => 'completed',
-                    'processing_error' => null,
+                        if (!empty($embeddings[$i])) {
+                            Embedding::create([
+                                'chunk_id'        => $chunk->id,
+                                'embedding'       => $embeddings[$i],
+                                'embedding_model' => env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
+                                'dimensions'      => count($embeddings[$i]),
+                            ]);
+                        }
+                    }
+                });
+
+                $processedCount += count($batch);
+
+                Log::info("Batch persisted", [
+                    'document_id' => $document->id,
+                    'progress'    => "{$processedCount}/{$totalChunks}",
+                    'memory_mb'   => round(memory_get_usage(true) / 1024 / 1024, 1),
                 ]);
-            });
+
+                // Free memory between batches
+                unset($embeddings, $batchTexts);
+                gc_collect_cycles();
+            }
+
+            // 7. Mark document as completed
+            $document->update([
+                'processing_status' => 'completed',
+                'processing_error'  => null,
+            ]);
 
             Log::info("Document processed successfully", [
-                'document_id' => $document->id,
-                'title' => $document->title,
-                'chunks_created' => count($chunkDefinitions),
+                'document_id'    => $document->id,
+                'title'          => $document->title,
+                'chunks_created' => $totalChunks,
             ]);
 
             return $document->fresh();
@@ -134,7 +211,7 @@ class DocumentProcessingService
 
             $document->update([
                 'processing_status' => 'failed',
-                'processing_error' => $errorMessage,
+                'processing_error'  => $errorMessage,
             ]);
 
             throw $e;
@@ -147,12 +224,9 @@ class DocumentProcessingService
     public function deleteDocument(Document $document): bool
     {
         return DB::transaction(function () use ($document) {
-            // Delete physical file from storage
             if (Storage::disk('local')->exists($document->stored_file_path)) {
                 Storage::disk('local')->delete($document->stored_file_path);
             }
-
-            // Cascading delete takes care of chunks and embeddings
             return (bool)$document->delete();
         });
     }

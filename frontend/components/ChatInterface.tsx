@@ -255,7 +255,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-112px)] md:h-[calc(100vh-5rem)] max-w-5xl mx-auto px-4 py-3 sm:py-4">
+    <div className="flex flex-col h-[calc(100vh-112px)] md:h-[calc(100vh-5rem)] max-w-5xl mx-auto px-4 py-3 sm:py-4 overflow-hidden">
       {/* Chat Header / Welcome Banner */}
       <div className="mb-4 bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-[#e8ded1] flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -445,7 +445,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       </div>
 
       {/* Input Box Area */}
-      <div className="mt-2 bg-white rounded-2xl border border-[#e8ded1] shadow-sm p-2 sm:p-2.5 focus-within:border-[#0d3d24] focus-within:ring-1 focus-within:ring-[#0d3d24] transition-all">
+      <div className="sticky bottom-0 mt-2 bg-white rounded-2xl border border-[#e8ded1] shadow-sm p-2 sm:p-2.5 focus-within:border-[#0d3d24] focus-within:ring-1 focus-within:ring-[#0d3d24] transition-all z-10">
         <form
           onSubmit={(e) => {
             e.preventDefault();

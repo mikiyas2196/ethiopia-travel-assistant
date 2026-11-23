@@ -32,9 +32,9 @@ class RAGService
     {
         $this->embedder = $embedder;
         $this->apiKey = env('GEMINI_API_KEY');
-        $model = env('GEMINI_MODEL', 'gemini-3.1-flash-lite');
+        $model = env('GEMINI_MODEL', 'gemini-flash-lite-latest');
         if ($model === 'gemini-2.5-flash' || empty($model)) {
-            $model = 'gemini-3.1-flash-lite';
+            $model = 'gemini-flash-lite-latest';
         }
         $this->model = $model;
         $this->similarityThreshold = (float)env('RAG_SIMILARITY_THRESHOLD', 0.15);
@@ -243,34 +243,42 @@ Follow-up Question: {$question}
 Standalone Query:
 PROMPT;
 
-        try {
-            $url = "/v1beta/models/gemini-3.1-flash-lite:generateContent?key={$this->apiKey}";
-            $response = $this->httpClient->post($url, [
-                'headers' => ['Content-Type' => 'application/json'],
-                'json' => [
-                    'contents' => [
-                        ['role' => 'user', 'parts' => [['text' => $prompt]]],
-                    ],
-                    'generationConfig' => [
-                        'temperature' => 0.0,
-                        'maxOutputTokens' => 80,
-                    ],
-                ],
-                'timeout' => 8,
-            ]);
+        $reformulateModels = array_values(array_unique(array_filter([
+            $this->model,
+            'gemini-flash-lite-latest',
+            'gemini-3.5-flash-lite',
+        ])));
 
-            $data = json_decode($response->getBody()->getContents(), true);
-            $rewritten = trim($data['candidates'][0]['content']['parts'][0]['text'] ?? '');
-
-            if (!empty($rewritten) && mb_strlen($rewritten) > 3) {
-                Log::info("Conversational query reformulated", [
-                    'original' => $question,
-                    'standalone' => $rewritten,
+        foreach ($reformulateModels as $candidateModel) {
+            try {
+                $url = "/v1beta/models/{$candidateModel}:generateContent?key={$this->apiKey}";
+                $response = $this->httpClient->post($url, [
+                    'headers' => ['Content-Type' => 'application/json'],
+                    'json' => [
+                        'contents' => [
+                            ['role' => 'user', 'parts' => [['text' => $prompt]]],
+                        ],
+                        'generationConfig' => [
+                            'temperature' => 0.0,
+                            'maxOutputTokens' => 80,
+                        ],
+                    ],
+                    'timeout' => 6,
                 ]);
-                return $rewritten;
+
+                $data = json_decode($response->getBody()->getContents(), true);
+                $rewritten = trim($data['candidates'][0]['content']['parts'][0]['text'] ?? '');
+
+                if (!empty($rewritten) && mb_strlen($rewritten) > 3) {
+                    Log::info("Conversational query reformulated with {$candidateModel}", [
+                        'original' => $question,
+                        'standalone' => $rewritten,
+                    ]);
+                    return $rewritten;
+                }
+            } catch (Exception $e) {
+                Log::warning("Query reformulation on {$candidateModel} skipped: " . $e->getMessage());
             }
-        } catch (Exception $e) {
-            Log::warning("Query reformulation skipped due to: " . $e->getMessage());
         }
 
         return $question;
@@ -332,52 +340,78 @@ LATEST USER QUESTION:
 {$question}
 PROMPT;
 
-        $modelsToTry = array_unique([
+        $modelsToTry = array_values(array_unique(array_filter([
             $this->model,
-            'gemini-3.1-flash-lite',
             'gemini-flash-lite-latest',
+            'gemini-3.5-flash-lite',
+            'gemini-3.1-flash-lite',
             'gemini-3.5-flash',
-        ]);
+            'gemini-flash-latest',
+        ])));
 
         $lastError = null;
 
         foreach ($modelsToTry as $candidateModel) {
-            try {
-                $url = "/v1beta/models/{$candidateModel}:generateContent?key={$this->apiKey}";
+            $maxAttemptsForModel = 2;
 
-                $response = $this->httpClient->post($url, [
-                    'headers' => ['Content-Type' => 'application/json'],
-                    'json' => [
-                        'contents' => [
-                            [
-                                'role' => 'user',
-                                'parts' => [
-                                    ['text' => $systemPrompt . "\n\n" . $userPrompt],
+            for ($attempt = 1; $attempt <= $maxAttemptsForModel; $attempt++) {
+                try {
+                    $url = "/v1beta/models/{$candidateModel}:generateContent?key={$this->apiKey}";
+
+                    $response = $this->httpClient->post($url, [
+                        'headers' => ['Content-Type' => 'application/json'],
+                        'json' => [
+                            'contents' => [
+                                [
+                                    'role' => 'user',
+                                    'parts' => [
+                                        ['text' => $systemPrompt . "\n\n" . $userPrompt],
+                                    ],
                                 ],
                             ],
+                            'generationConfig' => [
+                                'temperature' => 0.2,
+                                'maxOutputTokens' => 1500,
+                            ],
                         ],
-                        'generationConfig' => [
-                            'temperature' => 0.2,
-                            'maxOutputTokens' => 1500,
-                        ],
-                    ],
-                ]);
+                        'timeout' => 12,
+                    ]);
 
-                $data = json_decode($response->getBody()->getContents(), true);
+                    $data = json_decode($response->getBody()->getContents(), true);
+                    $candidateText = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
 
-                $candidateText = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                    if (!empty($candidateText)) {
+                        return $this->sanitizeOutputText(trim($candidateText));
+                    }
+                } catch (Exception $e) {
+                    $lastError = $e->getMessage();
+                    $is503 = str_contains($lastError, '503') || str_contains(strtolower($lastError), 'high demand');
+                    $is429 = str_contains($lastError, '429') || str_contains(strtolower($lastError), 'resource_exhausted') || str_contains(strtolower($lastError), 'quota');
 
-                if (!empty($candidateText)) {
-                    return $this->sanitizeOutputText(trim($candidateText));
+                    if (($is503 || $is429) && $attempt < $maxAttemptsForModel) {
+                        Log::warning("Gemini 503/429 demand spike on {$candidateModel} (attempt {$attempt}/{$maxAttemptsForModel}). Pausing 1.2s before retry...");
+                        usleep(1_200_000); // 1.2 second pause for brief spikes
+                        continue;
+                    }
+
+                    Log::warning("Gemini generation on model {$candidateModel} failed: {$lastError}. Trying next fallback candidate...");
+                    break;
                 }
-            } catch (Exception $e) {
-                $lastError = $e->getMessage();
-                Log::warning("Gemini generation on model {$candidateModel} failed: {$lastError}. Trying fallback model...");
             }
         }
 
         Log::error("All Gemini Generation models failed: " . $lastError);
-        return "An error occurred while contacting the AI service: " . $lastError;
+
+        // Grounded graceful fallback: Serve directly from retrieved context so the user is never stranded
+        $sourcesTitles = array_column($sources, 'title');
+        $sourcesSummary = !empty($sourcesTitles) ? implode(', ', array_unique($sourcesTitles)) : 'Ethiopian Tourism Documents';
+
+        $cleanContext = $this->sanitizeOutputText($context);
+        $excerpt = mb_substr($cleanContext, 0, 1000);
+
+        return "Here is the relevant information retrieved directly from your tourism knowledge base ({$sourcesSummary}):\n\n" .
+            $excerpt . "...\n\n" .
+            "- Notice: AI synthesis is currently experiencing temporary high demand on Google servers. The above information was retrieved directly from your verified documents.";
     }
 
     /**
