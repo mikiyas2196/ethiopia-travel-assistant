@@ -11,6 +11,7 @@ interface EditDocumentModalProps {
   onClose: () => void;
   onSuccess: () => void;
   categories: string[];
+  onCategoryCreated?: (newCategory: string, allCategories?: string[]) => void;
 }
 
 export const EditDocumentModal: React.FC<EditDocumentModalProps> = ({
@@ -19,7 +20,10 @@ export const EditDocumentModal: React.FC<EditDocumentModalProps> = ({
   onClose,
   onSuccess,
   categories,
+  onCategoryCreated,
 }) => {
+  const cleanCategories = (categories || []).filter((c) => c.toLowerCase() !== 'other');
+  const [categoriesList, setCategoriesList] = useState<string[]>(cleanCategories);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [description, setDescription] = useState('');
@@ -27,8 +31,19 @@ export const EditDocumentModal: React.FC<EditDocumentModalProps> = ({
   const [sourceUrl, setSourceUrl] = useState('');
   const [replacementFile, setReplacementFile] = useState<File | null>(null);
 
+  // New category inline creation
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [catLoading, setCatLoading] = useState(false);
+  const [catError, setCatError] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const filtered = (categories || []).filter((c) => c.toLowerCase() !== 'other');
+    setCategoriesList(filtered);
+  }, [categories]);
 
   useEffect(() => {
     if (document) {
@@ -39,10 +54,40 @@ export const EditDocumentModal: React.FC<EditDocumentModalProps> = ({
       setSourceUrl(document.source_url || '');
       setReplacementFile(null);
       setError(null);
+      setIsAddingCategory(false);
+      setCatError(null);
     }
   }, [document]);
 
   if (!isOpen || !document) return null;
+
+  const handleCreateCategory = async () => {
+    const name = newCatName.trim();
+    if (!name) return;
+    if (name.toLowerCase() === 'other') {
+      setCatError("'Other' is not allowed.");
+      return;
+    }
+    setCatLoading(true);
+    setCatError(null);
+    try {
+      const res = await api.createCategory(name);
+      const updated = (res.categories || [...categoriesList, name]).filter(
+        (c) => c.toLowerCase() !== 'other'
+      );
+      setCategoriesList(updated);
+      setCategory(name);
+      setNewCatName('');
+      setIsAddingCategory(false);
+      if (onCategoryCreated) {
+        onCategoryCreated(name, updated);
+      }
+    } catch (err: any) {
+      setCatError(err.message || 'Failed to create category.');
+    } finally {
+      setCatLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,18 +164,77 @@ export const EditDocumentModal: React.FC<EditDocumentModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-[#1e2420] mb-1">
-              Category
-            </label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none"
-            >
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-[#1e2420]">
+                Category
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddingCategory(!isAddingCategory);
+                  setCatError(null);
+                }}
+                className="text-xs font-bold text-[#0d3d24] hover:text-[#d48b14] transition"
+              >
+                {isAddingCategory ? 'Select Existing' : '+ Add New Category'}
+              </button>
+            </div>
+
+            {!isAddingCategory ? (
+              <select
+                value={category}
+                onChange={(e) => {
+                  if (e.target.value === '__add_new__') {
+                    setIsAddingCategory(true);
+                  } else {
+                    setCategory(e.target.value);
+                  }
+                }}
+                className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none bg-white text-[#1e2420]"
+              >
+                {categoriesList.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+                <option value="__add_new__">+ Create New Category...</option>
+              </select>
+            ) : (
+              <div className="p-2.5 bg-[#faf7f2] border border-[#d48b14]/40 rounded-xl space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newCatName}
+                    onChange={(e) => {
+                      setNewCatName(e.target.value);
+                      setCatError(null);
+                    }}
+                    placeholder="New category name..."
+                    className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-[#e8ded1] bg-white focus:border-[#0d3d24] outline-none"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={handleCreateCategory}
+                    disabled={catLoading || !newCatName.trim()}
+                    className="px-3 py-1.5 text-xs font-bold bg-[#0d3d24] text-white rounded-lg hover:bg-[#165b36] disabled:opacity-50 transition"
+                  >
+                    {catLoading ? 'Adding...' : 'Add'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingCategory(false);
+                      setCatError(null);
+                    }}
+                    className="px-2.5 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {catError && (
+                  <p className="text-[11px] text-red-600 font-medium">{catError}</p>
+                )}
+              </div>
+            )}
           </div>
 
           <div>

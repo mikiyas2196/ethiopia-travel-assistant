@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   UploadCloud,
   X,
@@ -8,6 +8,8 @@ import {
   AlertCircle,
   CheckCircle2,
   Compass,
+  Plus,
+  Tag,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { DocumentItem } from '../types';
@@ -17,6 +19,7 @@ interface UploadModalProps {
   onClose: () => void;
   onSuccess: (newDoc: DocumentItem) => void;
   categories: string[];
+  onCategoryCreated?: (newCategory: string, allCategories?: string[]) => void;
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({
@@ -24,13 +27,24 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   onClose,
   onSuccess,
   categories,
+  onCategoryCreated,
 }) => {
+  const cleanCategories = (categories || []).filter((c) => c.toLowerCase() !== 'other');
+  const [categoriesList, setCategoriesList] = useState<string[]>(cleanCategories);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState(categories[0] || 'UNESCO World Heritage & Historic Sites');
+  const [category, setCategory] = useState(cleanCategories[0] || 'UNESCO World Heritage & Historic Sites');
   const [description, setDescription] = useState('');
   const [sourceName, setSourceName] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
+
+  // Dynamic category creation state
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryDesc, setNewCategoryDesc] = useState('');
+  const [categoryLoading, setCategoryLoading] = useState(false);
+  const [newCategoryError, setNewCategoryError] = useState<string | null>(null);
+  const [newCategorySuccess, setNewCategorySuccess] = useState<string | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -39,7 +53,59 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    const filtered = (categories || []).filter((c) => c.toLowerCase() !== 'other');
+    setCategoriesList(filtered);
+    if (!category || category === 'Other' || !filtered.includes(category)) {
+      if (filtered.length > 0) {
+        setCategory(filtered[0]);
+      }
+    }
+  }, [categories]);
+
   if (!isOpen) return null;
+
+  const handleCreateCategory = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const name = newCategoryName.trim();
+    if (!name) {
+      setNewCategoryError('Category name is required.');
+      return;
+    }
+    if (name.toLowerCase() === 'other') {
+      setNewCategoryError("'Other' is not allowed. Please enter a descriptive category name.");
+      return;
+    }
+    if (name.length < 2) {
+      setNewCategoryError('Category name must be at least 2 characters.');
+      return;
+    }
+
+    setCategoryLoading(true);
+    setNewCategoryError(null);
+
+    try {
+      const res = await api.createCategory(name, newCategoryDesc.trim() || undefined);
+      const updatedList = (res.categories || [...categoriesList, name]).filter(
+        (c) => c.toLowerCase() !== 'other'
+      );
+      setCategoriesList(updatedList);
+      setCategory(name);
+      setNewCategoryName('');
+      setNewCategoryDesc('');
+      setIsAddingCategory(false);
+      setNewCategorySuccess(`Category "${name}" created and selected!`);
+      setTimeout(() => setNewCategorySuccess(null), 3000);
+
+      if (onCategoryCreated) {
+        onCategoryCreated(name, updatedList);
+      }
+    } catch (err: any) {
+      setNewCategoryError(err.message || 'Failed to create category.');
+    } finally {
+      setCategoryLoading(false);
+    }
+  };
 
   const handleFileSelection = (file: File) => {
     setError(null);
@@ -234,19 +300,111 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
           {/* Category */}
           <div>
-            <label className="block text-xs font-semibold text-[#1e2420] mb-1">
-              Tourism Category <span className="text-red-500">*</span>
-            </label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none"
-              required
-            >
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-[#1e2420]">
+                Tourism Category <span className="text-red-500">*</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddingCategory(!isAddingCategory);
+                  setNewCategoryError(null);
+                }}
+                className="text-xs font-bold text-[#0d3d24] hover:text-[#d48b14] flex items-center gap-1 transition"
+              >
+                <Plus className="w-3.5 h-3.5 text-[#d48b14]" />
+                <span>{isAddingCategory ? 'Select Existing Category' : '+ Add New Category'}</span>
+              </button>
+            </div>
+
+            {newCategorySuccess && (
+              <div className="mb-2 p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>{newCategorySuccess}</span>
+              </div>
+            )}
+
+            {!isAddingCategory ? (
+              <select
+                value={category}
+                onChange={(e) => {
+                  if (e.target.value === '__add_new__') {
+                    setIsAddingCategory(true);
+                  } else {
+                    setCategory(e.target.value);
+                  }
+                }}
+                className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] focus:border-[#0d3d24] outline-none bg-white text-[#1e2420]"
+                required
+              >
+                {categoriesList.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+                <option value="__add_new__" className="text-[#0d3d24] font-bold">
+                  + Create New Category...
+                </option>
+              </select>
+            ) : (
+              <div className="p-3 bg-[#faf7f2] border border-[#d48b14]/40 rounded-2xl space-y-2.5 animate-in fade-in duration-150">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold text-[#0d3d24] flex items-center gap-1.5">
+                    <Tag className="w-3.5 h-3.5 text-[#d48b14]" />
+                    <span>Create New Tourism Category</span>
+                  </div>
+                  <span className="text-[10px] text-[#5e6660]">Saved directly to database</span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={newCategoryName}
+                    onChange={(e) => {
+                      setNewCategoryName(e.target.value);
+                      setNewCategoryError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleCreateCategory();
+                      }
+                    }}
+                    placeholder="Category name (e.g., Cultural Festivals & Religious Sites)"
+                    className="flex-1 px-3 py-2 text-xs rounded-xl border border-[#e8ded1] bg-white focus:border-[#0d3d24] outline-none"
+                    autoFocus
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleCreateCategory()}
+                      disabled={categoryLoading || !newCategoryName.trim()}
+                      className="px-3.5 py-2 text-xs font-bold bg-[#0d3d24] hover:bg-[#165b36] text-white rounded-xl disabled:opacity-50 transition shrink-0 flex items-center gap-1"
+                    >
+                      {categoryLoading && <Compass className="w-3.5 h-3.5 animate-spin text-[#f3a628]" />}
+                      <span>{categoryLoading ? 'Creating...' : 'Create & Select'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingCategory(false);
+                        setNewCategoryError(null);
+                      }}
+                      className="px-3 py-2 text-xs font-semibold text-gray-500 hover:text-gray-800 rounded-xl hover:bg-gray-100 transition shrink-0"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+
+                {newCategoryError && (
+                  <p className="text-xs text-red-600 font-semibold flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 text-red-500 shrink-0" />
+                    <span>{newCategoryError}</span>
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Description */}

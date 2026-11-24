@@ -25,6 +25,8 @@ Route::get('/chat/user-session', [ChatController::class, 'userSession'])->middle
 // Public Knowledge Base Metadata & Statistics
 Route::get('/knowledge-base/statistics', [KnowledgeBaseController::class, 'statistics']);
 Route::get('/knowledge-base/categories', [KnowledgeBaseController::class, 'categories']);
+Route::post('/knowledge-base/categories', [KnowledgeBaseController::class, 'storeCategory']);
+Route::delete('/knowledge-base/categories/{name}', [KnowledgeBaseController::class, 'destroyCategory']);
 
 // In-Browser Document Viewing & File Download (supports header or ?token= for iframes)
 Route::get('/documents/{id}/view', [DocumentController::class, 'viewContent']);

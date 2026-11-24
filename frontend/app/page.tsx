@@ -23,7 +23,6 @@ export default function Home() {
     'Lakes, Waterfalls, Mountains & Scenery',
     'Cities, Museums, Parks & Cultural Experiences',
     'Hotels, Resorts & Travel Agencies',
-    'Other',
   ]);
 
   // Modals state
@@ -40,9 +39,21 @@ export default function Home() {
     setCurrentUser(user);
 
     api.getCategories().then((cats) => {
-      if (cats.length > 0) setCategories(cats);
+      if (cats.length > 0) {
+        setCategories(cats.filter((c) => c.toLowerCase() !== 'other'));
+      }
     }).catch(() => {});
   }, []);
+
+  const handleCategoryCreated = (newCat: string, allCats?: string[]) => {
+    if (allCats && allCats.length > 0) {
+      setCategories(allCats.filter((c) => c.toLowerCase() !== 'other'));
+    } else if (newCat) {
+      setCategories((prev) =>
+        Array.from(new Set([...prev.filter((c) => c.toLowerCase() !== 'other'), newCat]))
+      );
+    }
+  };
 
   const handleLogout = async () => {
     try {
@@ -105,6 +116,8 @@ export default function Home() {
             isAuthenticated={!!currentUser}
             currentUser={currentUser}
             onOpenLogin={() => setIsLoginModalOpen(true)}
+            categories={categories}
+            onCategoryCreated={handleCategoryCreated}
           />
         )}
       </main>
@@ -132,6 +145,7 @@ export default function Home() {
           setCurrentTab('documents');
         }}
         categories={categories}
+        onCategoryCreated={handleCategoryCreated}
       />
 
       {/* In-Browser Document Viewer Modal (PDF & Interactive Excel/CSV Spreadsheet Viewer) */}
@@ -160,6 +174,7 @@ export default function Home() {
           setEditingDoc(null);
         }}
         categories={categories}
+        onCategoryCreated={handleCategoryCreated}
       />
 
       {/* User & Permissions Management Modal (Admin Only) */}

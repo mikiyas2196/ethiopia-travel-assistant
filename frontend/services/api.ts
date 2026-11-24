@@ -214,6 +214,20 @@ export const api = {
     return res.categories || [];
   },
 
+  async createCategory(name: string, description?: string): Promise<{ success: boolean; message: string; category: string; categories: string[] }> {
+    return await request<{ success: boolean; message: string; category: string; categories: string[] }>('/knowledge-base/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description }),
+    });
+  },
+
+  async deleteCategory(name: string): Promise<{ success: boolean; message: string; categories: string[] }> {
+    return await request<{ success: boolean; message: string; categories: string[] }>(`/knowledge-base/categories/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+  },
+
   // Admin Authentication
   async login(email: string, password: string): Promise<{ token: string; user: AdminUser }> {
     const res = await request<{ success: boolean; token: string; user: AdminUser }>('/auth/login', {

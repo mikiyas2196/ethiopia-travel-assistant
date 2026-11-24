@@ -15,6 +15,9 @@ import {
   Clock,
   RefreshCw,
   ExternalLink,
+  Plus,
+  Tag,
+  X,
 } from 'lucide-react';
 import { DocumentItem } from '../types';
 import { api } from '../services/api';
@@ -27,6 +30,8 @@ interface DocumentManagerProps {
   isAuthenticated: boolean;
   currentUser?: import('../types').AdminUser | null;
   onOpenLogin: () => void;
+  categories?: string[];
+  onCategoryCreated?: (newCategory: string, allCategories?: string[]) => void;
 }
 
 export const DocumentManager: React.FC<DocumentManagerProps> = ({
@@ -37,17 +42,29 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
   isAuthenticated,
   currentUser,
   onOpenLogin,
+  categories: propCategories,
+  onCategoryCreated,
 }) => {
   const isAdmin = currentUser?.is_admin || currentUser?.role === 'admin';
   const canAdd = isAdmin || currentUser?.can_add_documents;
   const canEdit = isAdmin || currentUser?.can_edit_documents || currentUser?.can_add_documents;
   const canDelete = isAdmin || currentUser?.can_delete_documents;
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>(
+    (propCategories || []).filter((c) => c.toLowerCase() !== 'other')
+  );
   const [loading, setLoading] = useState(true);
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  // Category Management Modal State
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatDesc, setNewCatDesc] = useState('');
+  const [catActionLoading, setCatActionLoading] = useState(false);
+  const [catModalError, setCatModalError] = useState<string | null>(null);
+  const [catModalSuccess, setCatModalSuccess] = useState<string | null>(null);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -87,8 +104,86 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
   };
 
   useEffect(() => {
-    api.getCategories().then(setCategories).catch(() => {});
-  }, []);
+    if (propCategories && propCategories.length > 0) {
+      setCategories(propCategories.filter((c) => c.toLowerCase() !== 'other'));
+    } else {
+      api
+        .getCategories()
+        .then((cats) => {
+          setCategories(cats.filter((c) => c.toLowerCase() !== 'other'));
+        })
+        .catch(() => {});
+    }
+  }, [propCategories]);
+
+  const handleCreateCategory = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const name = newCatName.trim();
+    if (!name) {
+      setCatModalError('Category name is required.');
+      return;
+    }
+    if (name.toLowerCase() === 'other') {
+      setCatModalError("'Other' is not allowed. Please enter a descriptive category name.");
+      return;
+    }
+    if (name.length < 2) {
+      setCatModalError('Category name must be at least 2 characters.');
+      return;
+    }
+
+    setCatActionLoading(true);
+    setCatModalError(null);
+
+    try {
+      const res = await api.createCategory(name, newCatDesc.trim() || undefined);
+      const updated = (res.categories || [...categories, name]).filter(
+        (c) => c.toLowerCase() !== 'other'
+      );
+      setCategories(updated);
+      setNewCatName('');
+      setNewCatDesc('');
+      setCatModalSuccess(`Category "${name}" created successfully!`);
+      setTimeout(() => setCatModalSuccess(null), 3000);
+
+      if (onCategoryCreated) {
+        onCategoryCreated(name, updated);
+      }
+    } catch (err: any) {
+      setCatModalError(err.message || 'Failed to create category.');
+    } finally {
+      setCatActionLoading(false);
+    }
+  };
+
+  const handleDeleteCategory = async (catName: string) => {
+    if (!confirm(`Are you sure you want to remove the category "${catName}"?`)) return;
+
+    setCatActionLoading(true);
+    setCatModalError(null);
+
+    try {
+      const res = await api.deleteCategory(catName);
+      const updated = (res.categories || categories.filter((c) => c !== catName)).filter(
+        (c) => c.toLowerCase() !== 'other'
+      );
+      setCategories(updated);
+      setCatModalSuccess(`Category "${catName}" removed.`);
+      setTimeout(() => setCatModalSuccess(null), 3000);
+
+      if (categoryFilter === catName) {
+        setCategoryFilter('');
+      }
+
+      if (onCategoryCreated) {
+        onCategoryCreated('', updated);
+      }
+    } catch (err: any) {
+      setCatModalError(err.message || 'Failed to delete category.');
+    } finally {
+      setCatActionLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchDocuments();
@@ -251,20 +346,41 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
         </form>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-gray-100">
-          {/* Category Dropdown */}
-          <select
-            value={categoryFilter}
-            onChange={(e) => {
-              setCategoryFilter(e.target.value);
-              setCurrentPage(1);
-            }}
-            className="px-3 py-1.5 text-xs rounded-lg border border-[#e8ded1] bg-[#faf7f2] text-[#1e2420] outline-none"
-          >
-            <option value="">All Categories</option>
-            {categories.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+          {/* Category Dropdown & Quick Add */}
+          <div className="flex items-center gap-1.5">
+            <select
+              value={categoryFilter}
+              onChange={(e) => {
+                setCategoryFilter(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-[#e8ded1] bg-[#faf7f2] text-[#1e2420] outline-none"
+            >
+              <option value="">All Categories</option>
+              {categories
+                .filter((c) => c.toLowerCase() !== 'other')
+                .map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+            </select>
+            {canAdd && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCategoryModalOpen(true);
+                  setCatModalError(null);
+                  setCatModalSuccess(null);
+                }}
+                className="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-[#0d3d24]/10 hover:bg-[#0d3d24]/20 text-[#0d3d24] border border-[#0d3d24]/20 flex items-center gap-1 transition shrink-0"
+                title="Add or manage dynamic document categories"
+              >
+                <Plus className="w-3.5 h-3.5 text-[#d48b14]" />
+                <span className="hidden sm:inline">Category</span>
+              </button>
+            )}
+          </div>
 
           {/* Format Dropdown */}
           <select
@@ -468,6 +584,149 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({
           </div>
         )}
       </div>
+
+      {/* Category Management Modal */}
+      {isCategoryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl border border-[#e8ded1] max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 mb-4 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#0d3d24]/10 text-[#0d3d24] flex items-center justify-center">
+                  <Tag className="w-5 h-5 text-[#d48b14]" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#0d3d24]">Manage Tourism Categories</h3>
+                  <p className="text-xs text-[#5e6660]">Add custom categories dynamically for document indexing</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsCategoryModalOpen(false);
+                  setCatModalError(null);
+                  setCatModalSuccess(null);
+                }}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Alerts */}
+            {catModalError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                <span>{catModalError}</span>
+              </div>
+            )}
+
+            {catModalSuccess && (
+              <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{catModalSuccess}</span>
+              </div>
+            )}
+
+            {/* Add New Category Form */}
+            <form onSubmit={handleCreateCategory} className="mb-5 p-4 bg-[#faf7f2] border border-[#d48b14]/30 rounded-2xl space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-[#0d3d24] flex items-center gap-1.5">
+                <Plus className="w-3.5 h-3.5 text-[#d48b14]" />
+                <span>Add New Category</span>
+              </h4>
+              <div>
+                <input
+                  type="text"
+                  value={newCatName}
+                  onChange={(e) => {
+                    setNewCatName(e.target.value);
+                    setCatModalError(null);
+                  }}
+                  placeholder="e.g., Cultural Festivals & Religious Sites"
+                  className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-[#e8ded1] bg-white focus:border-[#0d3d24] outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <input
+                  type="text"
+                  value={newCatDesc}
+                  onChange={(e) => setNewCatDesc(e.target.value)}
+                  placeholder="Optional brief description..."
+                  className="w-full px-3 py-1.5 text-xs rounded-xl border border-[#e8ded1] bg-white focus:border-[#0d3d24] outline-none"
+                />
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={catActionLoading || !newCatName.trim()}
+                  className="px-4 py-2 rounded-xl bg-[#0d3d24] hover:bg-[#165b36] text-white text-xs font-semibold disabled:opacity-50 transition shadow-sm"
+                >
+                  {catActionLoading ? 'Saving...' : 'Add Category'}
+                </button>
+              </div>
+            </form>
+
+            {/* Existing Categories List */}
+            <div>
+              <h4 className="text-xs font-bold text-[#1e2420] mb-2.5 flex items-center justify-between">
+                <span>Active Categories ({categories.length})</span>
+                <span className="text-[11px] text-[#5e6660] font-normal">Stored in database</span>
+              </h4>
+              <div className="divide-y divide-gray-100 max-h-56 overflow-y-auto rounded-xl border border-[#e8ded1]">
+                {categories.length === 0 ? (
+                  <p className="p-4 text-xs text-center text-gray-400">No categories loaded.</p>
+                ) : (
+                  categories.map((cat) => {
+                    const docCount = documents.filter((d) => d.category === cat).length;
+                    return (
+                      <div
+                        key={cat}
+                        className="p-3 flex items-center justify-between hover:bg-[#faf7f2] transition text-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Tag className="w-3.5 h-3.5 text-[#0d3d24] shrink-0" />
+                          <span className="font-semibold text-[#1e2420]">{cat}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#0d3d24]/10 text-[#0d3d24]">
+                            {docCount} {docCount === 1 ? 'doc' : 'docs'}
+                          </span>
+                          {isAdmin && docCount === 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCategory(cat)}
+                              disabled={catActionLoading}
+                              className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition"
+                              title="Delete empty category"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="mt-5 pt-3 border-t border-gray-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCategoryModalOpen(false);
+                  setCatModalError(null);
+                  setCatModalSuccess(null);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-xl transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
