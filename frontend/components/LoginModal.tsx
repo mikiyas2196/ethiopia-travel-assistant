@@ -14,8 +14,8 @@ interface LoginModalProps {
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('admin@ethiopiatravel.com');
-  const [password, setPassword] = useState('admin123456');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -135,11 +135,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
                 required
               />
             </div>
-            {mode === 'login' && (
-              <p className="text-[11px] text-[#5e6660] mt-1.5">
-                Admin credentials: <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">admin@ethiopiatravel.com</code> / <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">admin123456</code>
-              </p>
-            )}
           </div>
 
           <button
@@ -185,8 +180,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
                 type="button"
                 onClick={() => {
                   setMode('login');
-                  setEmail('admin@ethiopiatravel.com');
-                  setPassword('admin123456');
+                  setEmail('');
+                  setPassword('');
                   setError(null);
                 }}
                 className="font-bold text-[#0d3d24] hover:text-[#d48b14] underline ml-1"
