@@ -26,22 +26,22 @@ class RAGService
     /**
      * Maximum number of chunks to retrieve for prompt context.
      */
-    protected int $topK = 6;
+    protected int $topK = 4;
 
     public function __construct(EmbeddingService $embedder)
     {
         $this->embedder = $embedder;
         $this->apiKey = env('GEMINI_API_KEY');
-        $model = env('GEMINI_MODEL', 'gemini-flash-lite-latest');
+        $model = env('GEMINI_MODEL', 'gemini-3.5-flash-lite');
         if ($model === 'gemini-2.5-flash' || empty($model)) {
-            $model = 'gemini-flash-lite-latest';
+            $model = 'gemini-3.5-flash-lite';
         }
         $this->model = $model;
         $this->similarityThreshold = (float)env('RAG_SIMILARITY_THRESHOLD', 0.15);
-        $this->topK = (int)env('RAG_TOP_K', 6);
+        $this->topK = (int)env('RAG_TOP_K', 4);
         $this->httpClient = new Client([
             'base_uri' => 'https://generativelanguage.googleapis.com',
-            'timeout' => 30,
+            'timeout' => 35,
         ]);
     }
 
@@ -245,8 +245,9 @@ PROMPT;
 
         $reformulateModels = array_values(array_unique(array_filter([
             $this->model,
-            'gemini-flash-lite-latest',
             'gemini-3.5-flash-lite',
+            'gemini-3-flash-preview',
+            'gemini-flash-lite-latest',
         ])));
 
         foreach ($reformulateModels as $candidateModel) {
@@ -263,7 +264,7 @@ PROMPT;
                             'maxOutputTokens' => 80,
                         ],
                     ],
-                    'timeout' => 6,
+                    'timeout' => 12,
                 ]);
 
                 $data = json_decode($response->getBody()->getContents(), true);
@@ -342,11 +343,10 @@ PROMPT;
 
         $modelsToTry = array_values(array_unique(array_filter([
             $this->model,
-            'gemini-flash-lite-latest',
             'gemini-3.5-flash-lite',
-            'gemini-3.1-flash-lite',
+            'gemini-3-flash-preview',
+            'gemini-flash-lite-latest',
             'gemini-3.5-flash',
-            'gemini-flash-latest',
         ])));
 
         $lastError = null;
@@ -374,7 +374,7 @@ PROMPT;
                                 'maxOutputTokens' => 1500,
                             ],
                         ],
-                        'timeout' => 12,
+                        'timeout' => 30,
                     ]);
 
                     $data = json_decode($response->getBody()->getContents(), true);
@@ -389,8 +389,8 @@ PROMPT;
                     $is429 = str_contains($lastError, '429') || str_contains(strtolower($lastError), 'resource_exhausted') || str_contains(strtolower($lastError), 'quota');
 
                     if (($is503 || $is429) && $attempt < $maxAttemptsForModel) {
-                        Log::warning("Gemini 503/429 demand spike on {$candidateModel} (attempt {$attempt}/{$maxAttemptsForModel}). Pausing 1.2s before retry...");
-                        usleep(1_200_000); // 1.2 second pause for brief spikes
+                        Log::warning("Gemini 503/429 demand spike on {$candidateModel} (attempt {$attempt}/{$maxAttemptsForModel}). Pausing 1.5s before retry...");
+                        usleep(1_500_000); // 1.5 second pause for brief spikes
                         continue;
                     }
 
