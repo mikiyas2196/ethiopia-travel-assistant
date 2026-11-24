@@ -268,7 +268,7 @@ PROMPT;
                 ]);
 
                 $data = json_decode($response->getBody()->getContents(), true);
-                $rewritten = trim($data['candidates'][0]['content']['parts'][0]['text'] ?? '');
+                $rewritten = trim($this->extractCandidateText($data['candidates'][0] ?? null));
 
                 if (!empty($rewritten) && mb_strlen($rewritten) > 3) {
                     Log::info("Conversational query reformulated with {$candidateModel}", [
@@ -371,16 +371,16 @@ PROMPT;
                             ],
                             'generationConfig' => [
                                 'temperature' => 0.2,
-                                'maxOutputTokens' => 1500,
+                                'maxOutputTokens' => 4096,
                             ],
                         ],
                         'timeout' => 30,
                     ]);
 
                     $data = json_decode($response->getBody()->getContents(), true);
-                    $candidateText = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
+                    $candidateText = $this->extractCandidateText($data['candidates'][0] ?? null);
 
-                    if (!empty($candidateText)) {
+                    if (!empty(trim($candidateText))) {
                         return $this->sanitizeOutputText(trim($candidateText));
                     }
                 } catch (Exception $e) {
@@ -412,6 +412,29 @@ PROMPT;
         return "Here is the relevant information retrieved directly from your tourism knowledge base ({$sourcesSummary}):\n\n" .
             $excerpt . "...\n\n" .
             "- Notice: AI synthesis is currently experiencing temporary high demand on Google servers. The above information was retrieved directly from your verified documents.";
+    }
+
+    /**
+     * Safely extract all generated text from candidate parts, concatenating all text parts and ignoring thinking tokens.
+     */
+    protected function extractCandidateText(?array $candidate): string
+    {
+        if (empty($candidate) || empty($candidate['content']['parts']) || !is_array($candidate['content']['parts'])) {
+            return '';
+        }
+
+        $textParts = [];
+        foreach ($candidate['content']['parts'] as $part) {
+            // Ignore thinking / reasoning traces if present
+            if (!empty($part['thought'])) {
+                continue;
+            }
+            if (isset($part['text']) && is_string($part['text'])) {
+                $textParts[] = $part['text'];
+            }
+        }
+
+        return implode('', $textParts);
     }
 
     /**
