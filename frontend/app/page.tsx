@@ -104,6 +104,7 @@ export default function Home() {
           <DashboardView
             onNavigateToUpload={() => handleTabChange('upload')}
             onNavigateToDocuments={() => setCurrentTab('documents')}
+            currentUser={currentUser}
           />
         )}
 

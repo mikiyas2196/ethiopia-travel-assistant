@@ -16,9 +16,9 @@ use Laravel\Sanctum\PersonalAccessToken;
 class KnowledgeBaseController extends Controller
 {
     /**
-     * Resolve user from Bearer token, query token, or Sanctum auth.
+     * Resolve actually authenticated user from Sanctum or Bearer/query/header token without admin fallback.
      */
-    protected function resolveUser(Request $request): ?User
+    protected function resolveAuthenticatedUser(Request $request): ?User
     {
         $user = auth('sanctum')->user() ?? $request->user('sanctum') ?? $request->user();
 
@@ -36,6 +36,16 @@ class KnowledgeBaseController extends Controller
             }
         }
 
+        return $user;
+    }
+
+    /**
+     * Resolve user from Bearer token, query token, or Sanctum auth.
+     */
+    protected function resolveUser(Request $request): ?User
+    {
+        $user = $this->resolveAuthenticatedUser($request);
+
         // Fallback to administrator so the system remains functional
         if (!$user) {
             $user = User::where('role', 'admin')->first()
@@ -49,8 +59,11 @@ class KnowledgeBaseController extends Controller
     /**
      * Get real-time dynamic statistics about the tourism knowledge base.
      */
-    public function statistics(): JsonResponse
+    public function statistics(Request $request): JsonResponse
     {
+        $user = $this->resolveAuthenticatedUser($request);
+        $canViewDocuments = $user && $user->canViewDocuments();
+
         $totalDocuments = Document::count();
         $completedDocuments = Document::where('processing_status', 'completed')->count();
         $pendingDocuments = Document::where('processing_status', 'pending')->orWhere('processing_status', 'processing')->count();
@@ -71,10 +84,12 @@ class KnowledgeBaseController extends Controller
             ->pluck('count', 'file_type')
             ->toArray();
 
-        // Recent 5 documents
-        $recentDocuments = Document::orderBy('created_at', 'desc')
-            ->limit(5)
-            ->get(['id', 'title', 'category', 'file_type', 'processing_status', 'chunk_count', 'created_at']);
+        // Recent 5 documents (only returned to users with document view permission)
+        $recentDocuments = $canViewDocuments
+            ? Document::orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get(['id', 'title', 'category', 'file_type', 'processing_status', 'chunk_count', 'created_at'])
+            : [];
 
         return response()->json([
             'success' => true,

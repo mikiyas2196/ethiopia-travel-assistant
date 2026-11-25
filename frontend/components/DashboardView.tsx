@@ -14,18 +14,22 @@ import {
   PieChart,
   Tag,
 } from 'lucide-react';
-import { KnowledgeBaseStats } from '../types';
+import { AdminUser, KnowledgeBaseStats } from '../types';
 import { api } from '../services/api';
 
 interface DashboardViewProps {
   onNavigateToUpload: () => void;
   onNavigateToDocuments: () => void;
+  currentUser?: AdminUser | null;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigateToUpload,
   onNavigateToDocuments,
+  currentUser,
 }) => {
+  const isAdmin = currentUser?.is_admin || currentUser?.role === 'admin';
+  const canViewDocuments = !!(isAdmin || currentUser?.can_view_documents);
   const [stats, setStats] = useState<KnowledgeBaseStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +49,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   useEffect(() => {
     fetchStats();
-  }, []);
+  }, [currentUser?.id, currentUser?.can_view_documents]);
 
   // Auto-refresh metrics while documents are processing
   useEffect(() => {
@@ -269,8 +273,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Recent Uploaded Documents Table */}
-      {stats && stats.recent_documents.length > 0 && (
+      {/* Recent Uploaded Documents Table (Visible only to users with document view permission) */}
+      {canViewDocuments && stats && stats.recent_documents.length > 0 && (
         <div className="bg-white rounded-2xl border border-[#e8ded1] shadow-sm overflow-hidden">
           <div className="p-5 flex items-center justify-between border-b border-gray-100">
             <div className="flex items-center gap-2">
